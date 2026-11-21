@@ -40,8 +40,9 @@ export const P = {
   resumeFrac: 0.85,
   prefGun: 70,
   prefLaser: 95,
-  peek: 1,
-  farm: 1,
+  peek: 0,
+  farm: 0,
+  hide: 1, // never start fights: avoid, stay quiet, survive
 }
 
 export class Brain {
@@ -337,6 +338,10 @@ export class Brain {
     let target: Track | null = null
     let tScore = 1e9
     const hostile = (e: Track) => {
+      if (P.hide) {
+        const dh = hyp(e.pos[0] - x, e.pos[1] - y)
+        return dh < 50 || (this.t - e.hurtMe < 5 && dh < 120)
+      }
       if (!P.selective) return true
       const d = hyp(e.pos[0] - x, e.pos[1] - y)
       if (this.t - e.hurtMe < 10 || d < 55) return true
@@ -382,7 +387,7 @@ export class Brain {
     // secondary targets (npcs, crates) when no mech engagement
     let farmTarget: { pos: number[]; vel: number[]; cz: number; r: number; isMech: boolean; id: number } | null = null
     const calm = !near.length && !recentlyHurt && hpFrac > 0.45
-    if (!shootTarget && calm && !zoneUrgent) {
+    if (!shootTarget && calm && !zoneUrgent && !P.hide) {
       let bd = 1e9
       for (const m of obs.mechs) {
         if (m.kind !== "npc") continue
@@ -629,6 +634,19 @@ export class Brain {
         move = sd
         boost = me.energy > 45 && !laserCharging
       }
+    } else if (P.hide && !target && (near.length || ghosts.length)) {
+      mode = "avoid"
+      const th = near.length ? near : ghosts
+      if (!this.coverPt || this.t - this.coverTime > 1.0) {
+        this.coverPt = this.findCover(th, { c: zc.c, r: Math.max(zc.r, 20) })
+        this.coverTime = this.t
+      }
+      if (this.coverPt && hyp(this.coverPt[0] - x, this.coverPt[1] - y) > 2) {
+        move = this.navTo(this.coverPt[0], this.coverPt[1])
+        const closest = Math.min(...th.map((e) => hyp(e.pos[0] - x, e.pos[1] - y)))
+        if (closest > 90) move = [move[0] * 0.4, move[1] * 0.4] // walk quietly
+        else boost = me.energy > 40
+      }
     } else if (P.farm && calm && !zoneUrgent && farmGoal) {
       const fg = farmGoal
       const d = hyp(fg.pos[0] - x, fg.pos[1] - y)
@@ -726,6 +744,11 @@ export class Brain {
     if (!me.grounded && this.t >= this.unstickUntil && mode !== "zone") boost = boost && me.energy > 40
 
     if (ml > 0.1) this.lastMoveDir = [move[0], move[1]]
+    if (P.hide && !zoneUrgent && (mode === "hold" || mode.startsWith("loot")) && !(this.t < this.unstickUntil)) {
+      const L = hyp(move[0], move[1])
+      if (L > 0.42) move = [(move[0] / L) * 0.42, (move[1] / L) * 0.42] // below step-sound speed
+      boost = false
+    }
     act.move = [Math.round(move[0] * 1000) / 1000, Math.round(move[1] * 1000) / 1000]
     act.boost = boost
     act.jump = jump
