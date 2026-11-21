@@ -55,7 +55,7 @@ export const P = {
   aimFix: 1, // keep the gun's lead aim while the laser charges; snap to the laser line only near release
   commit: 0, // never retreat from a 1v1; retreat only when outnumbered or nearly dead
   reset: 0, // after a kill, hide and regenerate before taking the next fight
-  dropRush: 1, // go hard for supply drops (full HP, energy, +3 cubes)
+  dropRush: 0, // go hard for supply drops (full HP, energy, +3 cubes)
 }
 
 export class Brain {
