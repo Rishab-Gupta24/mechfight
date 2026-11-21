@@ -63,6 +63,7 @@ export const P = {
   groundBoost: 1, // boost only on the ground (in the air boost = jets up); unstick hops before it jets
   giveUpT: 0, // diagnostic: from this match time (s) stop fighting and walk out of the zone (0 = off)
   roof: 1, // climb onto a roof inside the zone; hide in its interior, peek the edge to shoot down
+  roofPassive: 1, // on the roof: stay hidden in the interior, never peek or shoot unless a mech is on our roof
 }
 
 /** Gun hit chance vs distance, measured against real recorded house-bot motion (includes spread). */
@@ -132,6 +133,7 @@ export class Brain {
   lastEnemySeen = -99
   patrolIdx = 0
   patrolUntil = -99
+  roofDuel = false
   resetting = false
   hiding = false
   explore: V2 | null = null
@@ -869,6 +871,8 @@ export class Brain {
     act.aim = [wrap(aimYaw), aimPitch]
     this.lastAimCmd = [aimYaw, aimPitch]
     act.fire = P.pacifist ? [false, false] : fire
+    // passive camper: stay silent on the roof unless a mech has climbed onto it
+    if (P.roof && P.roofPassive && this.roofState === "on" && !this.roofDuel) act.fire = [false, false]
     if (P.giveUpT && this.t >= P.giveUpT) {
       // diagnostic: leave the zone and stop shooting
       const zc0 = obs.zone.center
@@ -1135,7 +1139,7 @@ export class Brain {
         if ((this.roofFail.get(r.id) ?? -999) > this.t - 60) continue
         const d = hyp(r.access[0] - x, r.access[1] - y)
         if (d > 250) continue
-        const sc = d - r.interior * 2
+        const sc = d - r.interior * (P.roofPassive ? 4 : 2)
         if (sc < bs) {
           bs = sc
           best = r
@@ -1177,9 +1181,11 @@ export class Brain {
     }
     if (onId !== r.id) {
       this.roofState = "approach"
+      this.roofDuel = false
       return null
     }
     const enemyOnRoof = !!(target && Math.abs(target.pos[2] - r.top) < 3 && tDist < 60)
+    this.roofDuel = enemyOnRoof
     if (enemyOnRoof && target) {
       const bx = (target.pos[0] - x) / (tDist || 1), by = (target.pos[1] - y) / (tDist || 1)
       const sx = -by * this.strafeSign, sy = bx * this.strafeSign
@@ -1201,9 +1207,9 @@ export class Brain {
         focus = tr
       }
     }
-    const patrolling = !focus && this.t - this.lastEnemySeen > 8 && hpFrac > 0.8
+    const patrolling = !P.roofPassive && !focus && this.t - this.lastEnemySeen > 8 && hpFrac > 0.8
     let dirx = 0, diry = 0
-    if (focus && hpFrac > 0.5 && ready) {
+    if (focus && hpFrac > 0.5 && ready && !P.roofPassive) {
       dirx = focus.pos[0] - r.center[0]
       diry = focus.pos[1] - r.center[1]
     } else if (patrolling) {
