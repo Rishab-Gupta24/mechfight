@@ -63,6 +63,7 @@ export const P = {
   groundBoost: 1, // boost only on the ground (in the air boost = jets up); unstick hops before it jets
   giveUpT: 0, // diagnostic: from this match time (s) stop fighting and walk out of the zone (0 = off)
   giveUp2v1: 0, // diagnostic: give up for good the first time 2+ enemy mechs are within 70 m
+  laserDuck: 1, // when a visible enemy charges its laser at us, step out of its line of sight if cover is close
   roof: 0, // climb onto a roof inside the zone; hide in its interior, peek the edge to shoot down
   roofPassive: 0, // on the roof: stay hidden in the interior, never peek or shoot unless a mech is on our roof
 }
@@ -136,6 +137,9 @@ export class Brain {
   patrolUntil = -99
   roofDuel = false
   gaveUp = false
+  duckPt: V2 | null = null
+  duckFor = -1
+  duckTime = -99
   resetting = false
   hiding = false
   explore: V2 | null = null
@@ -814,6 +818,50 @@ export class Brain {
     let ml = hyp(move[0], move[1])
     if (ml > 1) move = [move[0] / ml, move[1] / ml]
     ml = Math.min(1, ml)
+
+    // ---- laser duck: the enemy laser is hitscan, so only breaking line of sight avoids it ----
+    if (P.laserDuck && !zoneUrgent && w) {
+      let threat: Track | null = null
+      for (const e of enemies) {
+        if (!e.charging || this.t - e.seen > 0.25) continue
+        const d = hyp(e.pos[0] - x, e.pos[1] - y)
+        if (d < 25 || d > 290) continue
+        const brg = Math.atan2(y - e.pos[1], x - e.pos[0])
+        if (Math.abs(wrap(e.aim[0] - brg)) > 0.16) continue
+        if (!w.los(e.pos[0], e.pos[1], e.pos[2] + 8, x, y, z + 5)) continue
+        threat = e
+        break
+      }
+      if (threat) {
+        if (!this.duckPt || this.duckFor !== threat.id || this.t - this.duckTime > 0.6) {
+          this.duckFor = threat.id
+          this.duckTime = this.t
+          this.duckPt = null
+          let bd = 1e9
+          for (const R of [4, 7, 10, 13]) {
+            for (let k = 0; k < 16; k++) {
+              const a = (k / 16) * TAU
+              const px = x + Math.cos(a) * R, py = y + Math.sin(a) * R
+              if (!w.walkable(px, py, 2.9) || !w.walkLine(x, y, px, py, 2.6)) continue
+              const gz = w.groundAt(px, py)
+              if (w.los(threat.pos[0], threat.pos[1], threat.pos[2] + 8, px, py, gz + 4.5) || w.los(threat.pos[0], threat.pos[1], threat.pos[2] + 8, px, py, gz + 8)) continue
+              if (R < bd) {
+                bd = R
+                this.duckPt = [px, py]
+              }
+            }
+            if (this.duckPt) break
+          }
+        }
+        if (this.duckPt) {
+          const dd = hyp(this.duckPt[0] - x, this.duckPt[1] - y)
+          move = dd > 0.8 ? [(this.duckPt[0] - x) / dd, (this.duckPt[1] - y) / dd] : [0, 0]
+          boost = me.grounded && me.energy > 8
+          mode = "duck"
+          ml = Math.min(1, hyp(move[0], move[1]))
+        }
+      } else this.duckPt = null
+    }
 
     // ---- roof control (overrides movement; stuck handling still applies except while climbing) ----
     let climbing = false
