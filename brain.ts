@@ -49,6 +49,7 @@ export const P = {
   oneFront: 0, // while being attacked, only target attackers
   engageMax: 260, // max distance to open fire on a mech that has not hurt us
   pacifist: 0, // diagnostic: never fire, only evade
+  dodge: 1, // sidestep incoming gun / drone bullets
 }
 
 export class Brain {
@@ -734,6 +735,14 @@ export class Brain {
       move = [move[0] + dodge[0], move[1] + dodge[1]]
       boost = me.energy > 15
     }
+    if (P.dodge && !zoneUrgent) {
+      const dg = this.bulletDodge(obs, move, boost, laserCharging)
+      if (dg) {
+        move = dg.move
+        boost = dg.boost
+        mode += "+dodge"
+      }
+    }
     let ml = hyp(move[0], move[1])
     if (ml > 1) move = [move[0] / ml, move[1] / ml]
     ml = Math.min(1, ml)
@@ -878,6 +887,95 @@ export class Brain {
     }
     if (d < 40 && w.walkLine(x, y, goal[0], goal[1], 2.5)) return [(goal[0] - x) / d, (goal[1] - y) / d]
     return this.navTo(goal[0], goal[1])
+  }
+
+  /** Expected bullet damage for a candidate move, by simulating our acceleration against each visible bullet. */
+  bulletCost(bullets: any[], mx: number, my: number, boost: boolean, charging: boolean): number {
+    const me = this.me
+    const w = this.world
+    const sc = this.scale(me.cubes)
+    const R = 2.5 * sc + 0.35
+    const H = 9 * sc
+    const walk = me.stats.walk_speed ?? 11.7
+    const bst = me.stats.boost_speed ?? 19.5
+    const acc = this.cfg.mech.ground_accel ?? 58.5
+    let spd = (boost && me.energy > 5 ? bst : walk) * (charging ? 0.5 : 1)
+    const L = hyp(mx, my)
+    let tvx = 0, tvy = 0
+    if (L > 1e-6) {
+      tvx = (mx / L) * spd * Math.min(1, L)
+      tvy = (my / L) * spd * Math.min(1, L)
+      // a wall within 4 m in that direction stops us
+      if (w && !w.walkLine(me.pos[0], me.pos[1], me.pos[0] + (mx / L) * 4, me.pos[1] + (my / L) * 4, 2.5)) {
+        tvx = 0
+        tvy = 0
+      }
+    }
+    let cost = 0
+    const dt = 0.025
+    for (const b of bullets) {
+      let px = me.pos[0], py = me.pos[1]
+      let vx = me.vel[0], vy = me.vel[1]
+      const pz = me.pos[2]
+      for (let t = dt; t <= 0.9; t += dt) {
+        const dvx = tvx - vx, dvy = tvy - vy
+        const dv = hyp(dvx, dvy)
+        const step = acc * dt
+        if (dv <= step) {
+          vx = tvx
+          vy = tvy
+        } else {
+          vx += (dvx / dv) * step
+          vy += (dvy / dv) * step
+        }
+        px += vx * dt
+        py += vy * dt
+        const bx = b.pos[0] + b.vel[0] * t, by = b.pos[1] + b.vel[1] * t, bz = b.pos[2] + b.vel[2] * t
+        if (hyp(bx - px, by - py) < R && bz > pz - 0.3 && bz < pz + H + 0.3) {
+          cost += b.kind === "npc" ? 25 : 45
+          break
+        }
+      }
+    }
+    return cost
+  }
+
+  /** Pick a move that avoids visible incoming bullets, staying close to the planned move. */
+  bulletDodge(obs: Observation, move: V2, boost: boolean, charging: boolean): { move: V2; boost: boolean } | null {
+    const me = this.me
+    const cz = me.pos[2] + 4.5 * this.scale(me.cubes)
+    const bullets = obs.projectiles.filter((p) => {
+      if (p.kind !== "gun" && p.kind !== "npc") return false
+      // only bullets that are approaching and could pass near us within 0.9 s
+      const rx = me.pos[0] - p.pos[0], ry = me.pos[1] - p.pos[1], rz = cz - p.pos[2]
+      const v2 = p.vel[0] ** 2 + p.vel[1] ** 2 + p.vel[2] ** 2
+      if (v2 < 1) return false
+      const tca = (rx * p.vel[0] + ry * p.vel[1] + rz * p.vel[2]) / v2
+      if (tca < 0 || tca > 0.9) return false
+      const mx = p.pos[0] + p.vel[0] * tca - me.pos[0], my = p.pos[1] + p.vel[1] * tca - me.pos[1]
+      return hyp(mx, my) < 2.5 * this.scale(me.cubes) + 12
+    })
+    if (!bullets.length) return null
+    const base = this.bulletCost(bullets, move[0], move[1], boost, charging)
+    if (base === 0) return null
+    let best: { move: V2; boost: boolean } | null = null
+    let bc = base
+    let bd = -2
+    const canBoost = me.energy > 12 && !charging
+    for (let k = 0; k < 8; k++) {
+      const a = (k / 8) * TAU
+      const cx = Math.cos(a), cy = Math.sin(a)
+      for (const b of canBoost ? [false, true] : [false]) {
+        const c = this.bulletCost(bullets, cx, cy, b, charging)
+        const dot = cx * move[0] + cy * move[1]
+        if (c < bc || (c === bc && best && dot > bd)) {
+          bc = c
+          bd = dot
+          best = { move: [cx, cy], boost: b }
+        }
+      }
+    }
+    return best
   }
 
   pickupDecision(kind: string, wps: any[], laserSlot: number): { drop?: number } | null {
