@@ -52,6 +52,10 @@ export const P = {
   dodge: 1, // sidestep incoming gun / drone bullets
   lightning: 0, // prefer lightning and brawl at close range when holding it
   cubeHunt: 0, // grab kill cubes even under threat; farm drones only when no mech is near
+  aimFix: 1, // keep the gun's lead aim while the laser charges; snap to the laser line only near release
+  commit: 0, // never retreat from a 1v1; retreat only when outnumbered or nearly dead
+  reset: 0, // after a kill, hide and regenerate before taking the next fight
+  dropRush: 0, // go hard for supply drops (full HP, energy, +3 cubes)
 }
 
 export class Brain {
@@ -91,6 +95,8 @@ export class Brain {
   peekTime = -99
   peekFor = -1
   lastTargetId = -1
+  lastKill = -99
+  resetting = false
   hiding = false
   explore: V2 | null = null
   exploreTime = -99
@@ -301,6 +307,7 @@ export class Brain {
           }
         }
       } else if (e.type === "hit") this.lastDealt = this.t
+      else if (e.type === "kill") this.lastKill = this.t
       else if (e.type === "take_failed") this.takeFail.set(e.id, this.t)
     }
     for (const s of obs.sounds) {
@@ -392,7 +399,9 @@ export class Brain {
     const recentlyHurt = this.t - this.lastHurt < 3
     if (!this.fleeing) {
       const tHp = target ? target.hp : enemyHp
-      if (near.length && ((hpFrac < P.fleeFrac && tHp > me.hp * P.fleeRatio) || (hpFrac < 0.25 && enemyHp > me.hp * 0.7) || (near.length >= 3 && hpFrac < 0.75) || (near.length >= 2 && hpFrac < 0.5))) this.fleeing = true
+      if (P.commit) {
+        if ((near.length >= 2 && hpFrac < 0.5) || (near.length >= 3 && hpFrac < 0.75) || (hpFrac < 0.15 && tHp > me.hp * 2.5)) this.fleeing = true
+      } else if (near.length && ((hpFrac < P.fleeFrac && tHp > me.hp * P.fleeRatio) || (hpFrac < 0.25 && enemyHp > me.hp * 0.7) || (near.length >= 3 && hpFrac < 0.75) || (near.length >= 2 && hpFrac < 0.5))) this.fleeing = true
     } else {
       if (hpFrac > P.resumeFrac || (!near.length && !recentlyHurt && hpFrac > 0.6)) this.fleeing = false
       // cornered: enemy very close and weak -> fight
@@ -477,7 +486,9 @@ export class Brain {
       const lPitch = Math.atan2(st.cz - muzzleZ, hyp(lx - x, ly - y))
       const laser = laserSlot >= 0 ? wps[laserSlot]! : null
       const laserBusy = laser && (laser.charge ?? 0) > 0
-      if (laserBusy) {
+      const gunUsable = gunSlot >= 0 && (wps[gunSlot]!.ammo ?? 0) > 0 && (wps[gunSlot]!.reload ?? 0) <= 0
+      const nearRelease = laser && (laser.charge ?? 0) >= laser.stats.charge - 0.15
+      if (laserBusy && (!P.aimFix || !gunUsable || nearRelease)) {
         aimYaw = lYaw
         aimPitch = lPitch
       } else {
@@ -615,6 +626,16 @@ export class Brain {
         move = this.safeDir(ax / L, ay / L, 8)
       }
       boost = me.energy > 20
+    } else if (P.reset && this.resetCheck(hpFrac, target, tVis, tDist)) {
+      mode = "reset"
+      const recent = [...this.tracks.values()].filter((tr) => this.t - Math.max(tr.seen, tr.hurtMe) < 20)
+      if (recent.length) {
+        if ((!this.coverPt || this.t - this.coverTime > 1.5) && !this.over(12)) {
+          this.coverPt = this.findCover(recent, { c: zc.c, r: Math.max(zc.r, 20) })
+          this.coverTime = this.t
+        }
+        if (this.coverPt && hyp(this.coverPt[0] - x, this.coverPt[1] - y) > 2) move = this.navTo(this.coverPt[0], this.coverPt[1])
+      }
     } else if (target && (tVis || this.t - target.hurtMe < 6 || tDist < 140 || target.hp / target.maxHp < 0.4)) {
       mode = "fight"
       // preferred range
@@ -687,7 +708,7 @@ export class Brain {
       move = this.navTo(lp[0], lp[1])
       const d = hyp(lp[0] - x, lp[1] - y)
       if (wantLoot.kind === "drop" && d < 3) move = [0, 0]
-      boost = me.energy > 70 && d > 40
+      boost = (me.energy > 70 || (P.dropRush && wantLoot.kind === "drop" && me.energy > 30)) && d > 40
     } else {
       mode = "hold"
       if (P.farm && calm && this.t < 260) {
@@ -981,6 +1002,13 @@ export class Brain {
     return best
   }
 
+  /** Post-kill reset: stay hidden and regenerate until healthy, unless an enemy shows up close. */
+  resetCheck(hpFrac: number, target: Track | null, tVis: boolean, tDist: number): boolean {
+    if (!this.resetting && this.t - this.lastKill < 3 && hpFrac < 0.7) this.resetting = true
+    if (this.resetting && (hpFrac > 0.9 || this.t - this.lastKill > 45 || (target && tVis && tDist < 120) || this.t - this.lastHurt < 1)) this.resetting = false
+    return this.resetting
+  }
+
   weaponValue(kind: string): number {
     if (P.lightning && kind === "lightning") return 3.3
     return WEAPON_VALUE[kind] ?? 1
@@ -1030,14 +1058,19 @@ export class Brain {
       consider("pickup", p.id, p.pos, p.kind === "laser" ? 90 : 60, threatened ? 30 : 180)
     }
     // supply drops
-    if (!threatened && me.hp / me.max_hp > 0.4) {
+    if ((!threatened || P.dropRush) && me.hp / me.max_hp > (P.dropRush ? 0.2 : 0.4)) {
       for (const d of obs.drops) {
         if (d.holder != null && d.holder !== me.id) continue
         const dist = hyp(d.pos[0] - x, d.pos[1] - y)
-        const travel = dist / (me.stats.walk_speed ?? 11.7)
+        const travel = dist / (P.dropRush ? (me.stats.boost_speed ?? 19.5) * 0.8 : me.stats.walk_speed ?? 11.7)
         if (d.lands_in > travel + 8) continue
+        if (P.dropRush && threatened) {
+          // under threat, only go if no known mech is camping the ring
+          const camped = [...this.tracks.values()].some((tr) => this.t - tr.seen < 6 && hyp(tr.pos[0] - d.pos[0], tr.pos[1] - d.pos[1]) < 45)
+          if (camped) continue
+        }
         // stand at the drop centre once landed; else approach
-        consider("drop", d.id, d.pos, 120, 260)
+        consider("drop", d.id, d.pos, P.dropRush ? 260 : 120, P.dropRush ? 450 : 260)
       }
     }
     return best
