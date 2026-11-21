@@ -17,7 +17,7 @@ const UPGRADE_PRIORITY = [
   "lightning_efficiency", "gyros", "mortar_reload", "gun_mag", "servos", "lightning_range", "sensors",
   "reactor", "capacitor", "jets", "lightning_chain", "mortar_velocity", "mortar_splash", "laser_pierce",
 ]
-const WEAPON_VALUE: Record<string, number> = { laser: 3, lightning: 2.4, mortar: 1.6, gun: 2.2 }
+const WEAPON_VALUE: Record<string, number> = { laser: 3, lightning: 3.3, mortar: 1.6, gun: 2.2 }
 
 interface Track {
   id: number
@@ -38,11 +38,11 @@ export const P = {
   fleeFrac: 0.5,
   fleeRatio: 1.05,
   resumeFrac: 0.85,
-  prefGun: 70,
-  prefLaser: 95,
+  prefGun: 38,
+  prefLaser: 60,
   peek: 0,
   farm: 0,
-  hide: 1, // never start fights: avoid, stay quiet, survive
+  hide: 0, // never start fights: avoid, stay quiet, survive
 }
 
 export class Brain {
