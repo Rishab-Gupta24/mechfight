@@ -38,8 +38,8 @@ export const P = {
   fleeFrac: 0.5,
   fleeRatio: 1.05,
   resumeFrac: 0.85,
-  prefGun: 45,
-  prefLaser: 50,
+  prefGun: 70,
+  prefLaser: 95,
   peek: 0,
   farm: 0,
   armWait: 0, // avoid starting fights until a second weapon is held (or t > armT)
@@ -50,16 +50,17 @@ export const P = {
   engageMax: 260, // max distance to open fire on a mech that has not hurt us
   pacifist: 0, // diagnostic: never fire, only evade
   dodge: 1, // sidestep incoming gun / drone bullets
-  lightning: 0, // prefer lightning and brawl at close range when holding it
+  lightning: 1, // prefer lightning and brawl at close range when holding it
   cubeHunt: 0, // grab kill cubes even under threat; farm drones only when no mech is near
   aimFix: 1, // keep the gun's lead aim while the laser charges; snap to the laser line only near release
   commit: 0, // never retreat from a 1v1; retreat only when outnumbered or nearly dead
   reset: 0, // after a kill, hide and regenerate before taking the next fight
   dropRush: 0, // go hard for supply drops (full HP, energy, +3 cubes)
-  brawl: 1, // close distance fast (straighter approach, boost) when far beyond the preferred range
-  minHit: 0.35, // only fire the gun when the estimated hit chance is at least this (0 = always)
-  vsLightning: 56, // range to hold against a lightning holder (its reach is 45 m)
-  fastJuke: 1, // flip strafe direction every 0.35-0.8 s when the target is far (its bullets fly longer)
+  brawl: 0, // close distance fast (straighter approach, boost) when far beyond the preferred range
+  minHit: 0, // only fire the gun when the estimated hit chance is at least this (0 = always)
+  vsLightning: 65, // range to hold against a lightning holder (its reach is 45 m)
+  fastJuke: 0, // flip strafe direction every 0.35-0.8 s when the target is far (its bullets fly longer)
+  groundBoost: 1, // boost only on the ground (in the air boost = jets up); unstick hops before it jets
 }
 
 /** Gun hit chance vs distance, measured against real recorded house-bot motion (includes spread). */
@@ -120,6 +121,8 @@ export class Brain {
   peekFor = -1
   lastTargetId = -1
   lastKill = -99
+  lastStuck = -99
+  jetUnstick = false
   resetting = false
   hiding = false
   explore: V2 | null = null
@@ -805,7 +808,7 @@ export class Brain {
     if (this.t < this.unstickUntil) {
       move = this.unstickDir
       jump = me.grounded
-      boost = true
+      boost = !P.groundBoost || this.jetUnstick
     } else if (this.posHist.length > 10 && ml > 0.5) {
       const h0 = this.posHist[0]
       const allCmd = this.posHist.every((h) => h.cmd > 0.5)
@@ -814,14 +817,19 @@ export class Brain {
         const a = Math.atan2(move[1], move[0]) + (this.rng() < 0.5 ? 1 : -1) * (0.6 + this.rng() * 1.2)
         this.unstickDir = [Math.cos(a), Math.sin(a)]
         this.unstickUntil = this.t + 0.7
+        this.jetUnstick = this.t - this.lastStuck < 5 // second time stuck in a row: use the jets
+        this.lastStuck = this.t
         this.path = []
         this.posHist = []
         jump = me.grounded
-        boost = true
+        boost = !P.groundBoost || this.jetUnstick
       }
     }
     // landed on a roof/raised spot: just keep going; jets when airborne in unstick handled above
-    if (!me.grounded && this.t >= this.unstickUntil && mode !== "zone") boost = boost && me.energy > 40
+    if (!me.grounded && this.t >= this.unstickUntil) {
+      if (P.groundBoost) boost = false // in the air, boost would fire the jets upward
+      else if (mode !== "zone") boost = boost && me.energy > 40
+    }
 
     if (ml > 0.1) this.lastMoveDir = [move[0], move[1]]
     if (P.hide && !zoneUrgent && (mode === "hold" || mode.startsWith("loot")) && !(this.t < this.unstickUntil)) {
