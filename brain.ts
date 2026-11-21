@@ -13,7 +13,7 @@ const hyp = Math.hypot
 const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v)
 
 const UPGRADE_PRIORITY = [
-  "armor", "plating", "laser_damage", "gun_rate", "gun_damage", "nanites", "laser_charge", "gun_velocity",
+  "plating", "armor", "gun_damage", "laser_damage", "gun_rate", "nanites", "laser_charge", "gun_velocity",
   "lightning_efficiency", "gyros", "mortar_reload", "gun_mag", "servos", "lightning_range", "sensors",
   "reactor", "capacitor", "jets", "lightning_chain", "mortar_velocity", "mortar_splash", "laser_pierce",
 ]
@@ -40,6 +40,8 @@ export const P = {
   resumeFrac: 0.85,
   prefGun: 70,
   prefLaser: 95,
+  peek: 1,
+  farm: 0,
 }
 
 export class Brain {
@@ -74,6 +76,14 @@ export class Brain {
   lootTarget: { kind: string; id: number; pos: number[] } | null = null
   lootPickTime = -99
   lastMoveDir: V2 = [1, 0]
+  peekSpot: V2 | null = null
+  hideSpot: V2 | null = null
+  peekTime = -99
+  peekFor = -1
+  hiding = false
+  explore: V2 | null = null
+  exploreTime = -99
+  visited = new Set<number>()
 
   constructor(hello: Hello) {
     this.cfg = hello.config
@@ -377,7 +387,7 @@ export class Brain {
       for (const m of obs.mechs) {
         if (m.kind !== "npc") continue
         const d = hyp(m.pos[0] - x, m.pos[1] - y)
-        if (d > 110 || !inWant(m.pos, 40)) continue
+        if (d > (P.farm ? 160 : 110) || !inWant(m.pos, 40)) continue
         if (!this.los(me.pos, muzzleZ, m.pos, m.pos[2] + 1.75)) continue
         if (d < bd) {
           bd = d
@@ -387,13 +397,33 @@ export class Brain {
       if (!farmTarget)
         for (const c of obs.crates) {
           const d = hyp(c.pos[0] - x, c.pos[1] - y)
-          if (d > 90 || !inWant(c.pos, 40)) continue
+          if (d > (P.farm ? 130 : 90) || !inWant(c.pos, 40)) continue
           if (!this.los(me.pos, muzzleZ, c.pos, c.pos[2] + 1.2)) continue
           if (d < bd) {
             bd = d
             farmTarget = { pos: c.pos, vel: [0, 0, 0], cz: c.pos[2] + 1.2, r: 1.4, isMech: false, id: c.id }
           }
         }
+    }
+    let farmGoal: { pos: number[]; npc: boolean } | null = null
+    if (P.farm && calm && !zoneUrgent && me.cubes < 14) {
+      let bd = 1e9
+      for (const m of obs.mechs) {
+        if (m.kind !== "npc") continue
+        const d = hyp(m.pos[0] - x, m.pos[1] - y)
+        if (d < 200 && inWant(m.pos, 20) && d < bd) {
+          bd = d
+          farmGoal = { pos: m.pos, npc: true }
+        }
+      }
+      for (const c of obs.crates) {
+        const d = hyp(c.pos[0] - x, c.pos[1] - y) + 25
+        if (w && c.pos[2] - w.groundAt(c.pos[0], c.pos[1]) > 2.5) continue
+        if (d < 180 && inWant(c.pos, 20) && d < bd) {
+          bd = d
+          farmGoal = { pos: c.pos, npc: false }
+        }
+      }
     }
     const st = shootTarget ?? farmTarget
     const myAim = me.aim
@@ -476,6 +506,8 @@ export class Brain {
       if (laser && (laser.charge ?? 0) > 0) {
         const ch = laser.charge ?? 0
         fire[laserSlot] = ch < laser.stats.charge + (laser.stats.hold_s ?? 2) - 0.3
+      } else if (laser && target && laser.cooldown <= 0.05 && tDist < laser.stats.range && this.t - Math.max(target.seen, target.hurtMe) < 3 && this.hiding) {
+        fire[laserSlot] = true // pre-charge behind cover, release on peek
       }
       if (target) {
         aimYaw = Math.atan2(target.pos[1] - y, target.pos[0] - x)
@@ -563,7 +595,12 @@ export class Brain {
       if (target.weapons.includes("lightning")) pref = Math.max(pref, 65)
       if (lightSlot >= 0 && !target.weapons.includes("mortar") && laserSlot < 0) pref = 30
       if (target.hp < me.hp * 0.5) pref = Math.min(pref, 60)
-      if (!tVis) {
+      const peekMove = P.peek ? this.peekFight(target, pref, wps, gunSlot, laserSlot, zc) : null
+      if (peekMove) {
+        move = peekMove
+        mode = this.hiding ? "fight:hide" : "fight:peek"
+        boost = me.energy > 35 && !laserCharging
+      } else if (!tVis) {
         // get line of sight: path toward target
         move = this.navTo(target.pos[0], target.pos[1])
         boost = me.energy > 55 && tDist > 60
@@ -592,6 +629,17 @@ export class Brain {
         move = sd
         boost = me.energy > 45 && !laserCharging
       }
+    } else if (P.farm && calm && !zoneUrgent && farmGoal) {
+      const fg = farmGoal
+      const d = hyp(fg.pos[0] - x, fg.pos[1] - y)
+      const stand = fg.npc ? 55 : 30
+      const vis = this.los(me.pos, muzzleZ, fg.pos, fg.pos[2] + 1.2)
+      mode = fg.npc ? "farm:npc" : "farm:crate"
+      if (!vis || d > stand) move = this.navTo(fg.pos[0], fg.pos[1])
+      else if (fg.npc && d < 40) {
+        const L = d || 1
+        move = this.safeDir((x - fg.pos[0]) / L, (y - fg.pos[1]) / L, 6)
+      }
     } else if (wantLoot) {
       mode = "loot:" + wantLoot.kind
       const lp = wantLoot.pos
@@ -601,9 +649,33 @@ export class Brain {
       boost = me.energy > 70 && d > 40
     } else {
       mode = "hold"
-      // go toward a spot inside the wanted circle: a bit toward centre, near cover
-      const goalR = zc.r * 0.45
-      if (dZone > goalR) {
+      if (P.farm && calm && this.t < 260) {
+        const cellOf = (px: number, py: number) => Math.floor((px + 600) / 50) * 100 + Math.floor((py + 600) / 50)
+        this.visited.add(cellOf(x, y))
+        if (!this.explore || hyp(this.explore[0] - x, this.explore[1] - y) < 8 || this.t - this.exploreTime > 25) {
+          let best: V2 | null = null
+          let bs = 1e9
+          for (let k = 0; k < 24; k++) {
+            const a = this.rng() * TAU, r = 50 + this.rng() * 110
+            const px = x + Math.cos(a) * r, py = y + Math.sin(a) * r
+            if (!inWant([px, py], -10) || !w || !w.walkable(px, py, 3)) continue
+            const sc = r * 0.3 + (this.visited.has(cellOf(px, py)) ? 80 : 0) + hyp(px - zc.c[0], py - zc.c[1]) * 0.15
+            if (sc < bs) {
+              bs = sc
+              best = [px, py]
+            }
+          }
+          this.explore = best
+          this.exploreTime = this.t
+        }
+        if (this.explore) {
+          mode = "explore"
+          move = this.navTo(this.explore[0], this.explore[1])
+        }
+      }
+      if (mode === "explore") {
+        // handled
+      } else if (dZone > zc.r * 0.45) {
         move = this.navTo(zc.c[0], zc.c[1])
       } else if (ghosts.length || this.t - this.lastHurt < 5) {
         const th = ghosts[0]
@@ -677,6 +749,92 @@ export class Brain {
 
     draw.label(`${mode} hp${Math.round(me.hp)} e${Math.round(me.energy)} ${target ? "T" + target.id + (tVis ? "v" : "") : ""}`)
     return act
+  }
+
+  /** Peek-and-hide: pick a firing spot next to cover; duck behind it while weapons recover. */
+  peekFight(target: Track, pref: number, wps: any[], gunSlot: number, laserSlot: number, zc: { c: V2; r: number }): V2 | null {
+    const w = this.world
+    if (!w) return null
+    const [x, y] = this.me.pos
+    const tcz = this.centerZ(target)
+    const tez = target.pos[2] + 8 * this.scale(target.cubes)
+    const needNew = !this.peekSpot || this.peekFor !== target.id || this.t - this.peekTime > 1.2 ||
+      hyp(this.peekSpot[0] - x, this.peekSpot[1] - y) > 30
+    if (needNew) {
+      this.peekTime = this.t
+      this.peekFor = target.id
+      const cand: { p: V2; vis: boolean }[] = []
+      for (const R of [0, 4, 8, 12, 17, 23, 30]) {
+        const n = R === 0 ? 1 : Math.round(R * 0.9) + 6
+        for (let k = 0; k < n; k++) {
+          const a = (k / n) * TAU
+          const px = x + Math.cos(a) * R, py = y + Math.sin(a) * R
+          if (!w.walkable(px, py, 2.9)) continue
+          const gz = w.groundAt(px, py)
+          const vis = w.los(px, py, gz + 7, target.pos[0], target.pos[1], tcz) && w.los(target.pos[0], target.pos[1], tez, px, py, gz + 6)
+          cand.push({ p: [px, py], vis })
+        }
+      }
+      let best: { peek: V2; hide: V2 } | null = null
+      let bs = 1e9
+      for (const c of cand) {
+        if (!c.vis) continue
+        const dt = hyp(c.p[0] - target.pos[0], c.p[1] - target.pos[1])
+        if (dt < 25) continue
+        let hide: V2 | null = null
+        let hd = 1e9
+        for (const h of cand) {
+          if (h.vis) continue
+          const d = hyp(h.p[0] - c.p[0], h.p[1] - c.p[1])
+          if (d > 10 || d >= hd) continue
+          // hidden spot must not be closer to the target than the peek spot by much
+          if (hyp(h.p[0] - target.pos[0], h.p[1] - target.pos[1]) < dt - 6) continue
+          if (!w.walkLine(c.p[0], c.p[1], h.p[0], h.p[1], 2.6)) continue
+          hd = d
+          hide = h.p
+        }
+        if (!hide) continue
+        const dz = hyp(c.p[0] - zc.c[0], c.p[1] - zc.c[1])
+        const s = hyp(c.p[0] - x, c.p[1] - y) * 1.2 + Math.abs(dt - pref) * 0.35 + hd * 1.5 + (dz > zc.r ? (dz - zc.r) * 2 : 0)
+        if (s < bs) {
+          bs = s
+          best = { peek: c.p, hide }
+        }
+      }
+      if (!best) {
+        this.peekSpot = null
+        this.hideSpot = null
+        return null
+      }
+      this.peekSpot = best.peek
+      this.hideSpot = best.hide
+    }
+    if (!this.peekSpot || !this.hideSpot) return null
+    // decide phase
+    const gun = gunSlot >= 0 ? wps[gunSlot] : null
+    const laser = laserSlot >= 0 ? wps[laserSlot] : null
+    const gunReady = gun && (gun.reload ?? 0) <= 0.3 && (gun.ammo ?? 0) > 0
+    const laserReady = laser && laser.cooldown <= 0.25
+    const laserCharged = laser && (laser.charge ?? 0) >= laser.stats.charge * 0.9
+    const others = wps.some((wp, i) => wp && i !== gunSlot && i !== laserSlot && wp.cooldown <= 0.3)
+    const hpFrac = this.me.hp / this.me.max_hp
+    // enemy laser charging at us: hide unless we are about to fire a charged laser
+    const brg = Math.atan2(this.me.pos[1] - target.pos[1], this.me.pos[0] - target.pos[0])
+    const enemyThreat = target.charging && Math.abs(wrap(target.aim[0] - brg)) < 0.25
+    let wantPeek = !!(gunReady || laserCharged || (laserReady && !laser) || others)
+    if (laser && !gunReady && laserReady && !laserCharged) wantPeek = false // charge behind cover first
+    if (enemyThreat && !laserCharged && hpFrac < 0.85) wantPeek = false
+    if (target.hp < 250 && (gunReady || laserCharged)) wantPeek = true
+    this.hiding = !wantPeek
+    const goal = wantPeek ? this.peekSpot : this.hideSpot
+    const d = hyp(goal[0] - x, goal[1] - y)
+    if (d < 1.2) {
+      // jiggle at the spot to stay a harder target
+      if (wantPeek) return this.safeDir(Math.cos(this.t * 3.1) * 0.6, Math.sin(this.t * 3.1) * 0.6, 3)
+      return [0, 0]
+    }
+    if (d < 40 && w.walkLine(x, y, goal[0], goal[1], 2.5)) return [(goal[0] - x) / d, (goal[1] - y) / d]
+    return this.navTo(goal[0], goal[1])
   }
 
   pickupDecision(kind: string, wps: any[], laserSlot: number): { drop?: number } | null {
