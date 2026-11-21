@@ -58,6 +58,8 @@ export const P = {
   dropRush: 0, // go hard for supply drops (full HP, energy, +3 cubes)
   brawl: 1, // close distance fast (straighter approach, boost) when far beyond the preferred range
   minHit: 0.35, // only fire the gun when the estimated hit chance is at least this (0 = always)
+  vsLightning: 56, // range to hold against a lightning holder (its reach is 45 m)
+  fastJuke: 1, // flip strafe direction every 0.35-0.8 s when the target is far (its bullets fly longer)
 }
 
 /** Gun hit chance vs distance, measured against real recorded house-bot motion (includes spread). */
@@ -665,7 +667,7 @@ export class Brain {
       // preferred range
       let pref = P.prefGun
       if (laserSlot >= 0) pref = P.prefLaser
-      if (target.weapons.includes("lightning")) pref = Math.max(pref, 65)
+      if (target.weapons.includes("lightning")) pref = Math.max(pref, P.vsLightning)
       if (lightSlot >= 0 && !target.weapons.includes("mortar") && (laserSlot < 0 || P.lightning)) pref = P.lightning ? 32 : 30
       if (target.hp < me.hp * 0.5) pref = Math.min(pref, 60)
       const peekMove = P.peek ? this.peekFight(target, pref, wps, gunSlot, laserSlot, zc) : null
@@ -681,7 +683,7 @@ export class Brain {
         const bx = (target.pos[0] - x) / (tDist || 1), by = (target.pos[1] - y) / (tDist || 1)
         if (this.t > this.strafeUntil) {
           this.strafeSign = this.rng() < 0.5 ? -1 : 1
-          this.strafeUntil = this.t + 0.5 + this.rng() * 1.1
+          this.strafeUntil = this.t + (P.fastJuke && tDist > 60 ? 0.35 + this.rng() * 0.45 : 0.5 + this.rng() * 1.1)
         }
         const radial = clamp((tDist - pref) / 30, -1, 1)
         const closing = P.brawl && tDist > pref + 30
