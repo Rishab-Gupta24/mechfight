@@ -64,6 +64,9 @@ export const P = {
   giveUpT: 0, // diagnostic: from this match time (s) stop fighting and walk out of the zone (0 = off)
   giveUp2v1: 0, // diagnostic: give up for good the first time 2+ enemy mechs are within 70 m
   laserDuck: 1, // when a visible enemy charges its laser at us, step out of its line of sight if cover is close
+  fleeFix: 1, // retreat only when outnumbered up close or badly hurt; hold fire while retreating so regen can start
+  lootFight: 0, // grab nearby cubes / weapons / landed supply drops while still fighting (legs and torso are independent)
+  laserFix: 0, // don't crawl at half speed holding a laser charge: release when the target is gone or when ducking; execute low-HP targets early
   roof: 0, // climb onto a roof inside the zone; hide in its interior, peek the edge to shoot down
   roofPassive: 0, // on the roof: stay hidden in the interior, never peek or shoot unless a mech is on our roof
 }
@@ -445,9 +448,12 @@ export class Brain {
       const tHp = target ? target.hp : enemyHp
       if (P.commit) {
         if ((near.length >= 2 && hpFrac < 0.5) || (near.length >= 3 && hpFrac < 0.75) || (hpFrac < 0.15 && tHp > me.hp * 2.5)) this.fleeing = true
+      } else if (P.fleeFix) {
+        const close = enemies.filter((e) => hyp(e.pos[0] - x, e.pos[1] - y) < 75).length
+        if ((close >= 2 && hpFrac < 0.45) || (hpFrac < 0.35 && tHp > me.hp * 1.05)) this.fleeing = true
       } else if (near.length && ((hpFrac < P.fleeFrac && tHp > me.hp * P.fleeRatio) || (hpFrac < 0.25 && enemyHp > me.hp * 0.7) || (near.length >= 3 && hpFrac < 0.75) || (near.length >= 2 && hpFrac < 0.5))) this.fleeing = true
     } else {
-      if (hpFrac > P.resumeFrac || (!near.length && !recentlyHurt && hpFrac > 0.6)) this.fleeing = false
+      if (hpFrac > (P.fleeFix ? 0.7 : P.resumeFrac) || (!near.length && !recentlyHurt && hpFrac > (P.fleeFix ? 0.55 : 0.6))) this.fleeing = false
       // cornered: enemy very close and weak -> fight
       if (target && tDist < 30 && target.hp < me.hp * 0.8) this.fleeing = false
     }
@@ -557,7 +563,13 @@ export class Brain {
         const worth = st.isMech || dist3 < 120
         if (ch > 0) {
           // charging: release when full and aimed, or before auto-fire
-          const release = (ch >= full - 0.02 && aimed) || ch >= full + (laser.stats.hold_s ?? 2) - 0.25
+          let release = (ch >= full - 0.02 && aimed) || ch >= full + (laser.stats.hold_s ?? 2) - 0.25
+          if (P.laserFix && st.isMech && target && aimed && ch >= (laser.stats.min_charge ?? 0.15)) {
+            // execute: a partial charge already kills
+            const mf = laser.stats.min_frac ?? 0.35
+            const dmgNow = laser.stats.damage * (mf + (1 - mf) * Math.min(1, ch / full)) * (1 + (this.cfg.cubes.damage_per_cube ?? 0.04) * Math.min(me.cubes, 10))
+            if (dmgNow >= target.hp) release = true
+          }
           fire[laserSlot] = !release
         } else if (laser.cooldown <= 0.05 && dist3 < laser.stats.range * 0.97 && worth) {
           fire[laserSlot] = true
@@ -591,6 +603,8 @@ export class Brain {
       if (laser && (laser.charge ?? 0) > 0) {
         const ch = laser.charge ?? 0
         fire[laserSlot] = ch < laser.stats.charge + (laser.stats.hold_s ?? 2) - 0.3
+        // target gone for a moment: release instead of crawling at half speed
+        if (P.laserFix && !(target && this.t - target.seen < 0.4)) fire[laserSlot] = false
       } else if (laser && target && laser.cooldown <= 0.05 && tDist < laser.stats.range && this.t - Math.max(target.seen, target.hurtMe) < 3 && this.hiding) {
         fire[laserSlot] = true // pre-charge behind cover, release on peek
       }
@@ -819,6 +833,43 @@ export class Brain {
     if (ml > 1) move = [move[0] / ml, move[1] / ml]
     ml = Math.min(1, ml)
 
+    // ---- loot while fighting: legs go for the item, torso keeps shooting ----
+    if (P.lootFight && mode.startsWith("fight") && !zoneUrgent) {
+      let best: number[] | null = null
+      let bd = 1e9
+      for (const c of obs.cubes) {
+        const d = hyp(c.pos[0] - x, c.pos[1] - y)
+        if (d < 35 && d < bd && Math.abs(c.pos[2] - z) < 3.5) {
+          bd = d
+          best = c.pos
+        }
+      }
+      for (const pk of obs.pickups) {
+        const d = hyp(pk.pos[0] - x, pk.pos[1] - y)
+        if (d < 55 && d + 10 < bd && Math.abs(pk.pos[2] - z) < 3.5 && this.pickupDecision(pk.kind, wps as any[], laserSlot)) {
+          bd = d + 10
+          best = pk.pos
+        }
+      }
+      for (const dr of obs.drops) {
+        if (dr.lands_in > 2 || (dr.holder != null && dr.holder !== me.id)) continue
+        const d = hyp(dr.pos[0] - x, dr.pos[1] - y)
+        if (d < 60 && d + 5 < bd) {
+          bd = d + 5
+          best = dr.pos
+        }
+      }
+      if (best) {
+        const d = hyp(best[0] - x, best[1] - y)
+        if (d > 1.5) {
+          move = this.navTo(best[0], best[1])
+          boost = me.grounded && me.energy > 30 && !laserCharging
+        } else move = [0, 0]
+        mode = "fight+loot"
+        ml = Math.min(1, hyp(move[0], move[1]))
+      }
+    }
+
     // ---- laser duck: the enemy laser is hitscan, so only breaking line of sight avoids it ----
     if (P.laserDuck && !zoneUrgent && w) {
       let threat: Track | null = null
@@ -921,6 +972,8 @@ export class Brain {
     act.aim = [wrap(aimYaw), aimPitch]
     this.lastAimCmd = [aimYaw, aimPitch]
     act.fire = P.pacifist ? [false, false] : fire
+    if (P.fleeFix && this.fleeing && !(target && tDist < 30)) act.fire = [false, false] // let the 5 s regen timer start
+    if (P.laserFix && mode === "duck" && laserSlot >= 0) act.fire[laserSlot] = false // ducking at full speed
     // passive camper: stay silent on the roof unless a mech has climbed onto it
     if (P.roof && P.roofPassive && this.roofState === "on" && !this.roofDuel) act.fire = [false, false]
     if (P.giveUp2v1 && !this.gaveUp && enemies.filter((e) => hyp(e.pos[0] - x, e.pos[1] - y) < 70).length >= 2) this.gaveUp = true
