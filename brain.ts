@@ -35,9 +35,9 @@ interface Track {
 
 export const P = {
   selective: 0, // only engage hostile / favourable targets
-  fleeFrac: 0.65,
+  fleeFrac: 0.2,
   fleeRatio: 1.05,
-  resumeFrac: 0.95,
+  resumeFrac: 0.7,
   prefGun: 70,
   prefLaser: 95,
   peek: 0,
