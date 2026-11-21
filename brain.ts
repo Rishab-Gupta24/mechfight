@@ -13,8 +13,8 @@ const hyp = Math.hypot
 const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v)
 
 const UPGRADE_PRIORITY = [
-  "plating", "armor", "gun_damage", "laser_damage", "gun_rate", "nanites", "laser_charge", "gun_velocity",
-  "lightning_efficiency", "gyros", "mortar_reload", "gun_mag", "servos", "lightning_range", "sensors",
+  "gun_damage", "laser_damage", "gun_rate", "armor", "laser_charge", "plating", "lightning_efficiency",
+  "mortar_reload", "gun_velocity", "nanites", "gyros", "gun_mag", "servos", "lightning_range", "sensors",
   "reactor", "capacitor", "jets", "lightning_chain", "mortar_velocity", "mortar_splash", "laser_pierce",
 ]
 const WEAPON_VALUE: Record<string, number> = { laser: 3, lightning: 2.4, mortar: 1.6, gun: 2.2 }
@@ -35,13 +35,15 @@ interface Track {
 
 export const P = {
   selective: 0, // only engage hostile / favourable targets
-  fleeFrac: 0.2,
-  fleeRatio: 1.05,
-  resumeFrac: 0.7,
-  prefGun: 70,
-  prefLaser: 95,
-  peek: 0,
+  fleeFrac: 0.4,
+  fleeRatio: 0.8,
+  resumeFrac: 0.85,
+  prefGun: 90,
+  prefLaser: 120,
+  peek: 1,
   farm: 0,
+  armWait: 1, // avoid starting fights until a second weapon is held (or t > armT)
+  armT: 60,
   hide: 0, // never start fights: avoid, stay quiet, survive
 }
 
@@ -85,6 +87,11 @@ export class Brain {
   explore: V2 | null = null
   exploreTime = -99
   visited = new Set<number>()
+  t0 = 0
+  /** True when this decision has already used more than ms milliseconds. */
+  over(ms: number) {
+    return performance.now() - this.t0 > ms
+  }
 
   constructor(hello: Hello) {
     this.cfg = hello.config
@@ -155,8 +162,8 @@ export class Brain {
       off = hyp(p[0] - x, p[1] - y) > 10
     }
     if (!this.path.length || goalMoved || off || this.t - this.pathTime > 4) {
-      if (this.t - this.pathTime > 0.45 || !this.path.length || urgent) {
-        this.path = w.path(x, y, gx, gy, 28000)
+      if ((this.t - this.pathTime > 0.45 || !this.path.length || urgent) && !this.over(12)) {
+        this.path = w.path(x, y, gx, gy, 14000)
         this.pathGoal = [gx, gy]
         this.pathIdx = 0
         this.pathTime = this.t
@@ -248,6 +255,7 @@ export class Brain {
 
   // ---------------- main ----------------
   act(obs: Observation): Omit<Action, "tick"> {
+    this.t0 = performance.now()
     const me = obs.self
     this.me = me
     this.t = obs.t
@@ -338,7 +346,7 @@ export class Brain {
     let target: Track | null = null
     let tScore = 1e9
     const hostile = (e: Track) => {
-      if (P.hide) {
+      if (P.hide || (P.armWait && !wps[1] && this.t < P.armT)) {
         const dh = hyp(e.pos[0] - x, e.pos[1] - y)
         return dh < 50 || (this.t - e.hurtMe < 5 && dh < 120)
       }
@@ -578,7 +586,7 @@ export class Brain {
       boost = me.energy > 25 || !me.in_zone
     } else if (this.fleeing && near.length) {
       mode = "flee"
-      if (!this.coverPt || this.t - this.coverTime > 1.0) {
+      if ((!this.coverPt || this.t - this.coverTime > 1.0) && !this.over(12)) {
         this.coverPt = this.findCover(near, { c: zc.c, r: Math.max(zc.r, 20) })
         this.coverTime = this.t
       }
@@ -634,7 +642,7 @@ export class Brain {
         move = sd
         boost = me.energy > 45 && !laserCharging
       }
-    } else if (P.hide && !target && (near.length || ghosts.length)) {
+    } else if ((P.hide || (P.armWait && !wps[1] && this.t < P.armT)) && !target && (near.length || ghosts.length) && !wantLoot) {
       mode = "avoid"
       const th = near.length ? near : ghosts
       if (!this.coverPt || this.t - this.coverTime > 1.0) {
@@ -783,7 +791,7 @@ export class Brain {
     const tez = target.pos[2] + 8 * this.scale(target.cubes)
     const needNew = !this.peekSpot || this.peekFor !== target.id || this.t - this.peekTime > 1.2 ||
       hyp(this.peekSpot[0] - x, this.peekSpot[1] - y) > 30
-    if (needNew) {
+    if (needNew && !this.over(10)) {
       this.peekTime = this.t
       this.peekFor = target.id
       const cand: { p: V2; vis: boolean }[] = []
@@ -802,6 +810,7 @@ export class Brain {
       let bs = 1e9
       for (const c of cand) {
         if (!c.vis) continue
+        if (this.over(16)) break
         const dt = hyp(c.p[0] - target.pos[0], c.p[1] - target.pos[1])
         if (dt < 25) continue
         let hide: V2 | null = null
