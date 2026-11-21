@@ -61,6 +61,7 @@ export const P = {
   vsLightning: 65, // range to hold against a lightning holder (its reach is 45 m)
   fastJuke: 0, // flip strafe direction every 0.35-0.8 s when the target is far (its bullets fly longer)
   groundBoost: 1, // boost only on the ground (in the air boost = jets up); unstick hops before it jets
+  giveUpT: 240, // diagnostic: from this match time (s) stop fighting and walk out of the zone (0 = off)
 }
 
 /** Gun hit chance vs distance, measured against real recorded house-bot motion (includes spread). */
@@ -844,6 +845,25 @@ export class Brain {
     act.aim = [wrap(aimYaw), aimPitch]
     this.lastAimCmd = [aimYaw, aimPitch]
     act.fire = P.pacifist ? [false, false] : fire
+    if (P.giveUpT && this.t >= P.giveUpT) {
+      // diagnostic: leave the zone and stop shooting
+      const zc0 = obs.zone.center
+      let dx = x - zc0[0], dy = y - zc0[1]
+      const L = hyp(dx, dy) || 1
+      dx /= L
+      dy /= L
+      const w0 = this.world
+      const far = obs.zone.radius + 200
+      let gx = zc0[0] + dx * far, gy = zc0[1] + dy * far
+      if (w0) {
+        gx = clamp(gx, w0.bx0 + 10, w0.bx1 - 10)
+        gy = clamp(gy, w0.by0 + 10, w0.by1 - 10)
+      }
+      const mv = this.navTo(gx, gy)
+      act.move = [Math.round(mv[0] * 1000) / 1000, Math.round(mv[1] * 1000) / 1000]
+      act.boost = me.grounded && me.energy > 10
+      act.fire = [false, false]
+    }
 
     // ---- pickups: take if in range ----
     const reach = cfg.loot.pickup_radius ?? 4
