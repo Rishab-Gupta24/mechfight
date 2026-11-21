@@ -62,7 +62,7 @@ export const P = {
   fastJuke: 0, // flip strafe direction every 0.35-0.8 s when the target is far (its bullets fly longer)
   groundBoost: 1, // boost only on the ground (in the air boost = jets up); unstick hops before it jets
   giveUpT: 0, // diagnostic: from this match time (s) stop fighting and walk out of the zone (0 = off)
-  giveUp2v1: 1, // diagnostic: give up for good the first time 2+ enemy mechs are within 70 m
+  giveUp2v1: 0, // diagnostic: give up for good the first time 2+ enemy mechs are within 70 m
   roof: 0, // climb onto a roof inside the zone; hide in its interior, peek the edge to shoot down
   roofPassive: 0, // on the roof: stay hidden in the interior, never peek or shoot unless a mech is on our roof
 }
