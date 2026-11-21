@@ -62,6 +62,7 @@ export const P = {
   fastJuke: 0, // flip strafe direction every 0.35-0.8 s when the target is far (its bullets fly longer)
   groundBoost: 1, // boost only on the ground (in the air boost = jets up); unstick hops before it jets
   giveUpT: 0, // diagnostic: from this match time (s) stop fighting and walk out of the zone (0 = off)
+  giveUp2v1: 1, // diagnostic: give up for good the first time 2+ enemy mechs are within 70 m
   roof: 0, // climb onto a roof inside the zone; hide in its interior, peek the edge to shoot down
   roofPassive: 0, // on the roof: stay hidden in the interior, never peek or shoot unless a mech is on our roof
 }
@@ -134,6 +135,7 @@ export class Brain {
   patrolIdx = 0
   patrolUntil = -99
   roofDuel = false
+  gaveUp = false
   resetting = false
   hiding = false
   explore: V2 | null = null
@@ -873,7 +875,8 @@ export class Brain {
     act.fire = P.pacifist ? [false, false] : fire
     // passive camper: stay silent on the roof unless a mech has climbed onto it
     if (P.roof && P.roofPassive && this.roofState === "on" && !this.roofDuel) act.fire = [false, false]
-    if (P.giveUpT && this.t >= P.giveUpT) {
+    if (P.giveUp2v1 && !this.gaveUp && enemies.filter((e) => hyp(e.pos[0] - x, e.pos[1] - y) < 70).length >= 2) this.gaveUp = true
+    if ((P.giveUpT && this.t >= P.giveUpT) || this.gaveUp) {
       // diagnostic: leave the zone and stop shooting
       const zc0 = obs.zone.center
       let dx = x - zc0[0], dy = y - zc0[1]
