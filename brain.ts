@@ -50,6 +50,8 @@ export const P = {
   engageMax: 260, // max distance to open fire on a mech that has not hurt us
   pacifist: 0, // diagnostic: never fire, only evade
   dodge: 1, // sidestep incoming gun / drone bullets
+  lightning: 1, // prefer lightning and brawl at close range when holding it
+  cubeHunt: 0, // grab kill cubes even under threat; farm drones only when no mech is near
 }
 
 export class Brain {
@@ -406,7 +408,8 @@ export class Brain {
 
     // secondary targets (npcs, crates) when no mech engagement
     let farmTarget: { pos: number[]; vel: number[]; cz: number; r: number; isMech: boolean; id: number } | null = null
-    const calm = !near.length && !recentlyHurt && hpFrac > 0.45
+    const mechNear = [...this.tracks.values()].some((tr) => this.t - tr.seen < 8 && hyp(tr.pos[0] - x, tr.pos[1] - y) < 250)
+    const calm = !near.length && !recentlyHurt && hpFrac > 0.45 && (!P.cubeHunt || !mechNear)
     if (!shootTarget && calm && !zoneUrgent && !P.hide) {
       let bd = 1e9
       for (const m of obs.mechs) {
@@ -431,7 +434,7 @@ export class Brain {
         }
     }
     let farmGoal: { pos: number[]; npc: boolean } | null = null
-    if (P.farm && calm && !zoneUrgent && me.cubes < 14) {
+    if ((P.farm || P.cubeHunt) && calm && !zoneUrgent && me.cubes < 14) {
       let bd = 1e9
       for (const m of obs.mechs) {
         if (m.kind !== "npc") continue
@@ -618,7 +621,7 @@ export class Brain {
       let pref = P.prefGun
       if (laserSlot >= 0) pref = P.prefLaser
       if (target.weapons.includes("lightning")) pref = Math.max(pref, 65)
-      if (lightSlot >= 0 && !target.weapons.includes("mortar") && laserSlot < 0) pref = 30
+      if (lightSlot >= 0 && !target.weapons.includes("mortar") && (laserSlot < 0 || P.lightning)) pref = P.lightning ? 32 : 30
       if (target.hp < me.hp * 0.5) pref = Math.min(pref, 60)
       const peekMove = P.peek ? this.peekFight(target, pref, wps, gunSlot, laserSlot, zc) : null
       if (peekMove) {
@@ -652,7 +655,7 @@ export class Brain {
           if (this.rng() < 0.3) this.strafeSign *= -1
         }
         move = sd
-        boost = me.energy > 45 && !laserCharging
+        boost = me.energy > (P.lightning && lightSlot >= 0 ? 65 : 45) && !laserCharging
       }
     } else if ((P.hide || (P.armWait && !wps[1] && this.t < P.armT)) && !target && (near.length || ghosts.length) && !wantLoot) {
       mode = "avoid"
@@ -667,7 +670,7 @@ export class Brain {
         if (closest > 90) move = [move[0] * 0.4, move[1] * 0.4] // walk quietly
         else boost = me.energy > 40
       }
-    } else if (P.farm && calm && !zoneUrgent && farmGoal) {
+    } else if ((P.farm || P.cubeHunt) && calm && !zoneUrgent && farmGoal) {
       const fg = farmGoal
       const d = hyp(fg.pos[0] - x, fg.pos[1] - y)
       const stand = fg.npc ? 55 : 30
@@ -978,6 +981,11 @@ export class Brain {
     return best
   }
 
+  weaponValue(kind: string): number {
+    if (P.lightning && kind === "lightning") return 3.3
+    return WEAPON_VALUE[kind] ?? 1
+  }
+
   pickupDecision(kind: string, wps: any[], laserSlot: number): { drop?: number } | null {
     if (wps.some((w) => w && w.kind === kind)) return null
     const empty = wps.findIndex((w) => !w)
@@ -988,13 +996,13 @@ export class Brain {
     wps.forEach((w, i) => {
       if (!w) return
       if (w.kind === "laser" && (w.charge ?? 0) > 0) return
-      const v = WEAPON_VALUE[w.kind] ?? 1
+      const v = this.weaponValue(w.kind)
       if (v < wv) {
         wv = v
         worst = i
       }
     })
-    if (worst >= 0 && (WEAPON_VALUE[kind] ?? 1) > wv + 0.3) return { drop: worst }
+    if (worst >= 0 && this.weaponValue(kind) > wv + 0.3) return { drop: worst }
     return null
   }
 
@@ -1014,7 +1022,7 @@ export class Brain {
         best = { kind, id, pos }
       }
     }
-    for (const c of obs.cubes) consider("cube", c.id, c.pos, 60, threatened ? 25 : 160)
+    for (const c of obs.cubes) consider("cube", c.id, c.pos, P.cubeHunt ? 80 : 60, threatened ? (P.cubeHunt ? 60 : 25) : P.cubeHunt ? 200 : 160)
     for (const p of obs.pickups) {
       if ((this.takeFail.get(p.id) ?? -99) > this.t - 6) continue
       const dec = this.pickupDecision(p.kind, me.weapons as any[], -1)
