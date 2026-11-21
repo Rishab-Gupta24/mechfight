@@ -38,8 +38,8 @@ export const P = {
   fleeFrac: 0.5,
   fleeRatio: 1.05,
   resumeFrac: 0.85,
-  prefGun: 70,
-  prefLaser: 95,
+  prefGun: 45,
+  prefLaser: 50,
   peek: 0,
   farm: 0,
   armWait: 0, // avoid starting fights until a second weapon is held (or t > armT)
@@ -56,6 +56,28 @@ export const P = {
   commit: 0, // never retreat from a 1v1; retreat only when outnumbered or nearly dead
   reset: 0, // after a kill, hide and regenerate before taking the next fight
   dropRush: 0, // go hard for supply drops (full HP, energy, +3 cubes)
+  brawl: 1, // close distance fast (straighter approach, boost) when far beyond the preferred range
+  minHit: 0.35, // only fire the gun when the estimated hit chance is at least this (0 = always)
+}
+
+/** Gun hit chance vs distance, measured against real recorded house-bot motion (includes spread). */
+const HIT_TABLE: [number, number][] = [[30, 0.99], [45, 0.99], [60, 0.91], [80, 0.75], [100, 0.57], [130, 0.41], [160, 0.26], [200, 0.17], [240, 0.1]]
+export function gunHitChance(dist: number, targetSpeed: number): number {
+  let p = HIT_TABLE[HIT_TABLE.length - 1][1]
+  for (let i = 0; i + 1 < HIT_TABLE.length; i++) {
+    const [d0, p0] = HIT_TABLE[i], [d1, p1] = HIT_TABLE[i + 1]
+    if (dist <= d0) {
+      p = p0
+      break
+    }
+    if (dist <= d1) {
+      p = p0 + ((p1 - p0) * (dist - d0)) / (d1 - d0)
+      break
+    }
+  }
+  // the table assumes a typical 9.6 m/s target; slower targets are easier
+  const slow = Math.max(0, 1 - targetSpeed / 9.6)
+  return p + (1 - p) * slow * 0.7
 }
 
 export class Brain {
@@ -498,7 +520,9 @@ export class Brain {
       const dist3 = hyp(st.pos[0] - x, st.pos[1] - y)
       const tol = Math.atan2(st.r * 0.75, dist3) + 0.004
       // gun
-      if (gun && gun.cooldown <= 0.12 && (gun.reload ?? 0) <= 0 && (gun.ammo ?? 1) > 0 && dist3 < gun.stats.range * 0.98) {
+      const tSpeed = hyp(st.vel[0], st.vel[1])
+      const worthShot = !P.minHit || !st.isMech || gunHitChance(dist3, tSpeed) >= P.minHit
+      if (gun && worthShot && gun.cooldown <= 0.12 && (gun.reload ?? 0) <= 0 && (gun.ammo ?? 1) > 0 && dist3 < gun.stats.range * 0.98) {
         const e1 = Math.abs(wrap(myAim[0] - gYaw)), e2 = Math.abs(myAim[1] - gPitch)
         if (e1 < tol * 1.6 && e2 < tol * 2 + 0.01) fire[gunSlot] = true
       }
@@ -660,8 +684,10 @@ export class Brain {
           this.strafeUntil = this.t + 0.5 + this.rng() * 1.1
         }
         const radial = clamp((tDist - pref) / 30, -1, 1)
-        let mx = -by * this.strafeSign + bx * radial
-        let my = bx * this.strafeSign + by * radial
+        const closing = P.brawl && tDist > pref + 30
+        const sw = closing ? 0.35 : 1 // mostly straight in, with a slight zigzag
+        let mx = -by * this.strafeSign * sw + bx * radial
+        let my = bx * this.strafeSign * sw + by * radial
         const L = hyp(mx, my) || 1
         mx /= L
         my /= L
@@ -676,7 +702,7 @@ export class Brain {
           if (this.rng() < 0.3) this.strafeSign *= -1
         }
         move = sd
-        boost = me.energy > (P.lightning && lightSlot >= 0 ? 65 : 45) && !laserCharging
+        boost = me.energy > (closing ? 25 : P.lightning && lightSlot >= 0 ? 65 : 45) && !laserCharging
       }
     } else if ((P.hide || (P.armWait && !wps[1] && this.t < P.armT)) && !target && (near.length || ghosts.length) && !wantLoot) {
       mode = "avoid"
