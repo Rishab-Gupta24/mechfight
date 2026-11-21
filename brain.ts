@@ -1,6 +1,6 @@
 /** mechfight bot: zone-aware survivor that loots, farms, fights at range with lead, and retreats to cover to regen. */
 import { type Action, type ActorObs, draw, type Hello, log, type Observation } from "./mechfight.ts"
-import { World } from "./map.ts"
+import { type Roof, World } from "./map.ts"
 
 type V2 = [number, number]
 const TAU = Math.PI * 2
@@ -62,6 +62,7 @@ export const P = {
   fastJuke: 0, // flip strafe direction every 0.35-0.8 s when the target is far (its bullets fly longer)
   groundBoost: 1, // boost only on the ground (in the air boost = jets up); unstick hops before it jets
   giveUpT: 0, // diagnostic: from this match time (s) stop fighting and walk out of the zone (0 = off)
+  roof: 1, // climb onto a roof inside the zone; hide in its interior, peek the edge to shoot down
 }
 
 /** Gun hit chance vs distance, measured against real recorded house-bot motion (includes spread). */
@@ -124,6 +125,13 @@ export class Brain {
   lastKill = -99
   lastStuck = -99
   jetUnstick = false
+  roofT: Roof | null = null
+  roofState: "none" | "approach" | "climb" | "on" = "none"
+  roofFail = new Map<number, number>()
+  climbStart = -99
+  lastEnemySeen = -99
+  patrolIdx = 0
+  patrolUntil = -99
   resetting = false
   hiding = false
   explore: V2 | null = null
@@ -803,10 +811,26 @@ export class Brain {
     if (ml > 1) move = [move[0] / ml, move[1] / ml]
     ml = Math.min(1, ml)
 
+    // ---- roof control (overrides movement; stuck handling still applies except while climbing) ----
+    let climbing = false
+    if (P.roof && this.world) {
+      const rc = this.roofControl(obs, zc, zoneUrgent, target, tVis, tDist, hpFrac, wps, gunSlot, laserSlot)
+      if (rc) {
+        move = rc.move
+        boost = rc.boost
+        jump = rc.jump
+        mode = "roof:" + rc.mode
+        climbing = rc.mode === "climb"
+        ml = Math.min(1, hyp(move[0], move[1]))
+      }
+    }
+
     // ---- stuck detection ----
-    this.posHist.push({ t: this.t, x, y, cmd: ml })
+    this.posHist.push({ t: this.t, x, y, cmd: climbing ? 0 : ml })
     while (this.posHist.length && this.t - this.posHist[0].t > 1.6) this.posHist.shift()
-    if (this.t < this.unstickUntil) {
+    if (climbing) {
+      // pressing into the wall on purpose
+    } else if (this.t < this.unstickUntil) {
       move = this.unstickDir
       jump = me.grounded
       boost = !P.groundBoost || this.jetUnstick
@@ -827,7 +851,7 @@ export class Brain {
       }
     }
     // landed on a roof/raised spot: just keep going; jets when airborne in unstick handled above
-    if (!me.grounded && this.t >= this.unstickUntil) {
+    if (!me.grounded && this.t >= this.unstickUntil && !climbing) {
       if (P.groundBoost) boost = false // in the air, boost would fire the jets upward
       else if (mode !== "zone") boost = boost && me.energy > 40
     }
@@ -1063,6 +1087,147 @@ export class Brain {
     if (!this.resetting && this.t - this.lastKill < 3 && hpFrac < 0.7) this.resetting = true
     if (this.resetting && (hpFrac > 0.9 || this.t - this.lastKill > 45 || (target && tVis && tDist < 120) || this.t - this.lastHurt < 1)) this.resetting = false
     return this.resetting
+  }
+
+  /** Is a roof safely inside the zone we want to be in? */
+  roofSafe(r: Roof, zc: { c: V2; r: number; hard: { c: V2; r: number } }): boolean {
+    const d = hyp(r.center[0] - zc.c[0], r.center[1] - zc.c[1])
+    const dh = hyp(r.center[0] - zc.hard.c[0], r.center[1] - zc.hard.c[1])
+    return d + 8 <= zc.r && dh + 15 <= zc.hard.r
+  }
+
+  /** Straight move across a roof toward (gx, gy), refusing steps that get within 2.5 m of the edge. */
+  roofStep(gx: number, gy: number, id: number): V2 {
+    const w = this.world!
+    const [x, y] = this.me.pos
+    const d = hyp(gx - x, gy - y)
+    if (d < 1) return [0, 0]
+    const ux = (gx - x) / d, uy = (gy - y) / d
+    const c = w.cell(x + ux * 3, y + uy * 3)
+    if (c >= 0 && w.roofId[c] === id && w.roofDist[c] >= 3) return [ux, uy]
+    const r = w.roofs[id]
+    const cd = hyp(r.center[0] - x, r.center[1] - y) || 1
+    return [(r.center[0] - x) / cd, (r.center[1] - y) / cd]
+  }
+
+  /** Climb onto a roof and fight from it. Returns a movement override, or null to keep normal behaviour. */
+  roofControl(obs: Observation, zc: { c: V2; r: number; hard: { c: V2; r: number } }, zoneUrgent: boolean, target: Track | null, tVis: boolean, tDist: number, hpFrac: number, wps: any[], gunSlot: number, laserSlot: number): { move: V2; boost: boolean; jump: boolean; mode: string } | null {
+    const w = this.world!
+    const me = this.me
+    const [x, y, z] = me.pos
+    if (target && tVis) this.lastEnemySeen = this.t
+    const onId = w.roofAt(x, y, z)
+    if (onId >= 0 && me.grounded && this.roofSafe(w.roofs[onId], zc) && !zoneUrgent) {
+      this.roofT = w.roofs[onId]
+      this.roofState = "on"
+    }
+    if (zoneUrgent || (this.roofT && !this.roofSafe(this.roofT, zc))) {
+      this.roofT = null
+      this.roofState = "none"
+      return null
+    }
+    const busy = !!(target && tVis && tDist < 100)
+    if (this.roofState === "none" && !busy) {
+      let best: Roof | null = null
+      let bs = 1e9
+      for (const r of w.roofs) {
+        if (!this.roofSafe(r, zc)) continue
+        if ((this.roofFail.get(r.id) ?? -999) > this.t - 60) continue
+        const d = hyp(r.access[0] - x, r.access[1] - y)
+        if (d > 250) continue
+        const sc = d - r.interior * 2
+        if (sc < bs) {
+          bs = sc
+          best = r
+        }
+      }
+      if (best) {
+        this.roofT = best
+        this.roofState = "approach"
+      }
+    }
+    const r = this.roofT
+    if (!r) return null
+    if (this.roofState === "approach") {
+      if (busy) return null
+      const d = hyp(r.access[0] - x, r.access[1] - y)
+      const need = r.height * 1.5 + 20
+      if (d > 1.8) return { move: this.navTo(r.access[0], r.access[1]), boost: me.energy > need + 20 && me.grounded, jump: false, mode: "approach" }
+      if (me.energy < need) return { move: [0, 0], boost: false, jump: false, mode: "charge" }
+      this.roofState = "climb"
+      this.climbStart = this.t
+    }
+    if (this.roofState === "climb") {
+      const elapsed = this.t - this.climbStart
+      if (elapsed > 2.5 + r.height / 6 || (me.energy < 1 && z < r.top - 0.5) || (elapsed > 1 && me.grounded && z < r.top - 2)) {
+        this.roofFail.set(r.id, this.t)
+        this.roofT = null
+        this.roofState = "none"
+        return null
+      }
+      const above = z >= r.top + 0.3
+      const ex = r.edge[0] - r.access[0], ey = r.edge[1] - r.access[1]
+      const el = hyp(ex, ey) || 1
+      let move: V2 = [ex / el, ey / el]
+      if (above) {
+        const cd = hyp(r.center[0] - x, r.center[1] - y) || 1
+        move = [(r.center[0] - x) / cd, (r.center[1] - y) / cd]
+      }
+      return { move, boost: !above && me.energy > 1, jump: me.grounded && elapsed < 0.4, mode: "climb" }
+    }
+    if (onId !== r.id) {
+      this.roofState = "approach"
+      return null
+    }
+    const enemyOnRoof = !!(target && Math.abs(target.pos[2] - r.top) < 3 && tDist < 60)
+    if (enemyOnRoof && target) {
+      const bx = (target.pos[0] - x) / (tDist || 1), by = (target.pos[1] - y) / (tDist || 1)
+      const sx = -by * this.strafeSign, sy = bx * this.strafeSign
+      const m = this.roofStep(x + sx * 6, y + sy * 6, r.id)
+      if (hyp(m[0] - sx, m[1] - sy) > 0.5) this.strafeSign *= -1
+      return { move: m, boost: me.energy > 50 && me.grounded, jump: false, mode: "duel" }
+    }
+    const gun = gunSlot >= 0 ? wps[gunSlot] : null
+    const laser = laserSlot >= 0 ? wps[laserSlot] : null
+    const ready = !!((gun && (gun.reload ?? 0) <= 0.2 && (gun.ammo ?? 0) > 0) || (laser && laser.cooldown <= 0.3) || wps.some((wp, i) => wp && i !== gunSlot && i !== laserSlot && wp.cooldown <= 0.3))
+    let focus: Track | null = null
+    let fs = 1e9
+    for (const tr of this.tracks.values()) {
+      const age = this.t - Math.max(tr.seen, tr.hurtMe)
+      if (age > 6) continue
+      const sc = age * 30 + hyp(tr.pos[0] - x, tr.pos[1] - y)
+      if (sc < fs) {
+        fs = sc
+        focus = tr
+      }
+    }
+    const patrolling = !focus && this.t - this.lastEnemySeen > 8 && hpFrac > 0.8
+    let dirx = 0, diry = 0
+    if (focus && hpFrac > 0.5 && ready) {
+      dirx = focus.pos[0] - r.center[0]
+      diry = focus.pos[1] - r.center[1]
+    } else if (patrolling) {
+      if (this.t > this.patrolUntil) {
+        this.patrolIdx = (this.patrolIdx + 1) % 4
+        this.patrolUntil = this.t + 3.5
+      }
+      const a = (this.patrolIdx * Math.PI) / 2
+      dirx = Math.cos(a)
+      diry = Math.sin(a)
+    }
+    const dl = hyp(dirx, diry)
+    if (dl < 1e-6) return { move: this.roofStep(r.center[0], r.center[1], r.id), boost: false, jump: false, mode: "hide" }
+    const ux = dirx / dl, uy = diry / dl
+    let gx = r.center[0], gy = r.center[1]
+    for (let st = 2; st < 80; st += 2) {
+      const px = r.center[0] + ux * st, py = r.center[1] + uy * st
+      const c = w.cell(px, py)
+      if (c < 0 || w.roofId[c] !== r.id || w.roofDist[c] < 3) break
+      gx = px
+      gy = py
+      if (focus && w.los(px, py, r.top + 8, focus.pos[0], focus.pos[1], focus.pos[2] + 4.5)) break
+    }
+    return { move: this.roofStep(gx, gy, r.id), boost: false, jump: false, mode: focus ? "peek" : "patrol" }
   }
 
   weaponValue(kind: string): number {

@@ -1,6 +1,16 @@
 /** Static map model: terrain, solids, line of sight, walkability and A* pathfinding on a 1 m grid. */
 import { readFileSync } from "node:fs"
 
+export interface Roof {
+  id: number
+  top: number // roof height (world z)
+  height: number // above surrounding ground
+  center: [number, number] // deepest interior point (hiding spot)
+  access: [number, number] // walkable ground point next to a wall to climb from
+  edge: [number, number] // roof edge point nearest the access point (climb toward it)
+  interior: number // metres from center to nearest edge
+}
+
 export class World {
   nx = 0
   ny = 0
@@ -13,6 +23,9 @@ export class World {
   blocked!: Uint8Array // not walkable at all
   clear!: Float32Array // distance (m) to nearest blocked cell
   bx0 = 0
+  roofs: Roof[] = []
+  roofId!: Int16Array // roof index per cell, -1 = none
+  roofDist!: Uint8Array // metres to that roof's edge (0 = not on a roof)
   bx1 = 0
   by0 = 0
   by1 = 0
@@ -80,6 +93,7 @@ export class World {
       }
     this.blocked = blocked
     this.clear = chamfer(blocked, nx, this.ny)
+    this.buildRoofs(w.prisms)
     this.gs = new Float32Array(n)
     this.from = new Int32Array(n)
     this.stamp = new Uint32Array(n)
@@ -118,6 +132,79 @@ export class World {
         for (let i = i0; i <= i1; i++) fn(j * this.nx + i)
       }
     }
+  }
+
+  /** Flat building tops 8-45 m up with a deep interior and a climbable wall next to open ground. */
+  private buildRoofs(prisms: any[]) {
+    const n = this.nx * this.ny, nx = this.nx
+    this.roofId = new Int16Array(n).fill(-1)
+    this.roofDist = new Uint8Array(n)
+    for (const p of prisms) {
+      if (p.kind !== "building") continue
+      const cells: number[] = []
+      this.raster(p.ring, p.holes ?? [], (c) => {
+        if (Math.abs(this.losTop[c] - p.top) < 0.3 && isNaN(this.bandBase[c])) cells.push(c)
+      })
+      if (cells.length < 150) continue
+      const gs = cells.map((c) => this.ground[c]).sort((a, b) => a - b)
+      const height = p.top - gs[Math.floor(gs.length / 2)]
+      if (height < 8 || height > 45) continue
+      const set = new Set(cells)
+      const dist = new Map<number, number>()
+      let frontier = cells.filter((c) => !set.has(c + 1) || !set.has(c - 1) || !set.has(c + nx) || !set.has(c - nx))
+      for (const c of frontier) dist.set(c, 1)
+      let d = 1
+      while (frontier.length) {
+        const nf: number[] = []
+        d++
+        for (const c of frontier) for (const m of [c + 1, c - 1, c + nx, c - nx]) if (set.has(m) && !dist.has(m)) {
+          dist.set(m, d)
+          nf.push(m)
+        }
+        frontier = nf
+      }
+      let best = -1, bd = 0
+      for (const [c, v] of dist) if (v > bd) {
+        bd = v
+        best = c
+      }
+      if (bd < 6) continue
+      const bx = this.minX + (best % nx), by = this.minY + Math.floor(best / nx)
+      let acc: [number, number] | null = null, edge: [number, number] | null = null, ad = 1e9
+      for (const [c, v] of dist) {
+        if (v !== 1) continue
+        const ex = this.minX + (c % nx), ey = this.minY + Math.floor(c / nx)
+        for (let k = 0; k < 8; k++) {
+          const a = (k / 8) * Math.PI * 2
+          for (const r of [3.5, 4.5, 5.5]) {
+            const gx = ex + Math.cos(a) * r, gy = ey + Math.sin(a) * r
+            if (!this.walkable(gx, gy, 3)) continue
+            const dd = Math.hypot(gx - bx, gy - by)
+            if (dd < ad) {
+              ad = dd
+              acc = [gx, gy]
+              edge = [ex, ey]
+            }
+          }
+        }
+      }
+      if (!acc || !edge) continue
+      const id = this.roofs.length
+      this.roofs.push({ id, top: p.top, height, center: [bx, by], access: acc, edge, interior: bd })
+      for (const [c, v] of dist) {
+        this.roofId[c] = id
+        this.roofDist[c] = Math.min(255, v)
+      }
+    }
+  }
+
+  /** Roof index under (x, y) if standing at height z on it, else -1. */
+  roofAt(x: number, y: number, z: number): number {
+    const c = this.cell(x, y)
+    if (c < 0) return -1
+    const id = this.roofId[c]
+    if (id < 0 || Math.abs(this.roofs[id].top - z) > 1.5) return -1
+    return id
   }
 
   cell(x: number, y: number): number {
