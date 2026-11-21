@@ -53,8 +53,8 @@ export const P = {
   lightning: 0, // prefer lightning and brawl at close range when holding it
   cubeHunt: 0, // grab kill cubes even under threat; farm drones only when no mech is near
   aimFix: 1, // keep the gun's lead aim while the laser charges; snap to the laser line only near release
-  commit: 0, // never retreat from a 1v1; retreat only when outnumbered or nearly dead
-  reset: 0, // after a kill, hide and regenerate before taking the next fight
+  commit: 1, // never retreat from a 1v1; retreat only when outnumbered or nearly dead
+  reset: 1, // after a kill, hide and regenerate before taking the next fight
   dropRush: 0, // go hard for supply drops (full HP, energy, +3 cubes)
 }
 
