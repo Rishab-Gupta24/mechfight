@@ -51,7 +51,7 @@ export const P = {
   pacifist: 0, // diagnostic: never fire, only evade
   dodge: 1, // sidestep incoming gun / drone bullets
   lightning: 0, // prefer lightning and brawl at close range when holding it
-  cubeHunt: 1, // grab kill cubes even under threat; farm drones only when no mech is near
+  cubeHunt: 0, // grab kill cubes even under threat; farm drones only when no mech is near
 }
 
 export class Brain {
