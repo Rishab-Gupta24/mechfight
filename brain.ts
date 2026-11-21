@@ -64,8 +64,8 @@ export const P = {
   giveUpT: 0, // diagnostic: from this match time (s) stop fighting and walk out of the zone (0 = off)
   giveUp2v1: 0, // diagnostic: give up for good the first time 2+ enemy mechs are within 70 m
   laserDuck: 1, // when a visible enemy charges its laser at us, step out of its line of sight if cover is close
-  fleeFix: 1, // retreat only when outnumbered up close or badly hurt; hold fire while retreating so regen can start
-  lootFight: 0, // grab nearby cubes / weapons / landed supply drops while still fighting (legs and torso are independent)
+  fleeFix: 0, // retreat only when outnumbered up close or badly hurt; hold fire while retreating so regen can start
+  lootFight: 1, // grab nearby cubes / weapons / landed supply drops while still fighting (legs and torso are independent)
   laserFix: 0, // don't crawl at half speed holding a laser charge: release when the target is gone or when ducking; execute low-HP targets early
   roof: 0, // climb onto a roof inside the zone; hide in its interior, peek the edge to shoot down
   roofPassive: 0, // on the roof: stay hidden in the interior, never peek or shoot unless a mech is on our roof
