@@ -44,11 +44,11 @@ export const P = {
   farm: 0,
   armWait: 0, // avoid starting fights until a second weapon is held (or t > armT)
   armT: 60,
-  hide: 1, // never start fights: avoid, stay quiet, survive
+  hide: 0, // never start fights: avoid, stay quiet, survive
   focus: 0, // bonus (m) for keeping the current target
   oneFront: 0, // while being attacked, only target attackers
   engageMax: 260, // max distance to open fire on a mech that has not hurt us
-  pacifist: 1, // diagnostic: never fire, only evade
+  pacifist: 0, // diagnostic: never fire, only evade
 }
 
 export class Brain {
