@@ -35,16 +35,20 @@ interface Track {
 
 export const P = {
   selective: 0, // only engage hostile / favourable targets
-  fleeFrac: 0.4,
-  fleeRatio: 0.8,
+  fleeFrac: 0.5,
+  fleeRatio: 1.05,
   resumeFrac: 0.85,
-  prefGun: 90,
-  prefLaser: 120,
-  peek: 1,
+  prefGun: 70,
+  prefLaser: 95,
+  peek: 0,
   farm: 0,
-  armWait: 1, // avoid starting fights until a second weapon is held (or t > armT)
+  armWait: 0, // avoid starting fights until a second weapon is held (or t > armT)
   armT: 60,
-  hide: 0, // never start fights: avoid, stay quiet, survive
+  hide: 1, // never start fights: avoid, stay quiet, survive
+  focus: 0, // bonus (m) for keeping the current target
+  oneFront: 0, // while being attacked, only target attackers
+  engageMax: 260, // max distance to open fire on a mech that has not hurt us
+  pacifist: 1, // diagnostic: never fire, only evade
 }
 
 export class Brain {
@@ -83,6 +87,7 @@ export class Brain {
   hideSpot: V2 | null = null
   peekTime = -99
   peekFor = -1
+  lastTargetId = -1
   hiding = false
   explore: V2 | null = null
   exploreTime = -99
@@ -346,6 +351,7 @@ export class Brain {
     let target: Track | null = null
     let tScore = 1e9
     const hostile = (e: Track) => {
+      if (P.pacifist) return false
       if (P.hide || (P.armWait && !wps[1] && this.t < P.armT)) {
         const dh = hyp(e.pos[0] - x, e.pos[1] - y)
         return dh < 50 || (this.t - e.hurtMe < 5 && dh < 120)
@@ -359,16 +365,21 @@ export class Brain {
       if (d < 130 && me.hp > e.hp * 1.35) return true
       return false
     }
+    const underAttack = enemies.some((e) => this.t - e.hurtMe < 6)
     for (const e of enemies) {
       if (!hostile(e)) continue
       const d = hyp(e.pos[0] - x, e.pos[1] - y)
+      const attacker = this.t - e.hurtMe < 10
+      if (P.oneFront && underAttack && !attacker && e.id !== this.lastTargetId && d > 40) continue
+      if (!attacker && d > P.engageMax && e.id !== this.lastTargetId) continue
       const vis = this.los(me.pos, muzzleZ, e.pos, this.centerZ(e))
-      let s = d + (e.hp / e.maxHp) * 60 + (vis ? 0 : 250) - (this.t - e.hurtMe < 4 ? 40 : 0)
+      let s = d + (e.hp / e.maxHp) * 60 + (vis ? 0 : 250) - (this.t - e.hurtMe < 4 ? 40 : 0) - (e.id === this.lastTargetId ? P.focus : 0)
       if (s < tScore) {
         tScore = s
         target = e
       }
     }
+    this.lastTargetId = target ? target.id : -1
     const tDist = target ? hyp(target.pos[0] - x, target.pos[1] - y) : 1e9
     const tVis = target ? this.los(me.pos, muzzleZ, target.pos, this.centerZ(target)) : false
 
@@ -763,7 +774,7 @@ export class Brain {
     aimPitch = clamp(aimPitch, cfg.mech.min_pitch ?? -0.7, cfg.mech.max_pitch ?? 1.3)
     act.aim = [wrap(aimYaw), aimPitch]
     this.lastAimCmd = [aimYaw, aimPitch]
-    act.fire = fire
+    act.fire = P.pacifist ? [false, false] : fire
 
     // ---- pickups: take if in range ----
     const reach = cfg.loot.pickup_radius ?? 4
