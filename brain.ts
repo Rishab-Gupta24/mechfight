@@ -40,8 +40,8 @@ export const P = {
   resumeFrac: 0.85,
   prefGun: 70,
   prefLaser: 95,
-  peek: 1,
-  farm: 0,
+  peek: 0,
+  farm: 1,
 }
 
 export class Brain {
