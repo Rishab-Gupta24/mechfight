@@ -62,8 +62,8 @@ export const P = {
   fastJuke: 0, // flip strafe direction every 0.35-0.8 s when the target is far (its bullets fly longer)
   groundBoost: 1, // boost only on the ground (in the air boost = jets up); unstick hops before it jets
   giveUpT: 0, // diagnostic: from this match time (s) stop fighting and walk out of the zone (0 = off)
-  roof: 1, // climb onto a roof inside the zone; hide in its interior, peek the edge to shoot down
-  roofPassive: 1, // on the roof: stay hidden in the interior, never peek or shoot unless a mech is on our roof
+  roof: 0, // climb onto a roof inside the zone; hide in its interior, peek the edge to shoot down
+  roofPassive: 0, // on the roof: stay hidden in the interior, never peek or shoot unless a mech is on our roof
 }
 
 /** Gun hit chance vs distance, measured against real recorded house-bot motion (includes spread). */
