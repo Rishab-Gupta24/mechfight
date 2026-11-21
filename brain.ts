@@ -40,7 +40,7 @@ export const P = {
   resumeFrac: 0.85,
   prefGun: 70,
   prefLaser: 95,
-  peek: 0,
+  peek: 1,
   farm: 1,
 }
 
