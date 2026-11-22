@@ -72,7 +72,7 @@ export const P = {
   slopeFix: 1, // treat slopes over 1.15 m per metre as walls (engine: 50 deg) and widen clearance as cubes grow the mech
   lightAny: 1, // fire lightning whenever any visible enemy is inside its cone and range, not only the main target
   beamPos: 1, // place unseen attackers at the beam's muzzle point instead of guessing 80 m along the bearing
-  coverStrafe: 0, // while strafing in a fight, drift toward a spot near cover so a laser duck is usually in reach
+  coverStrafe: 1, // while strafing in a fight, drift toward a spot near cover so a laser duck is usually in reach
   roof: 0, // climb onto a roof inside the zone; hide in its interior, peek the edge to shoot down
   roofPassive: 0, // on the roof: stay hidden in the interior, never peek or shoot unless a mech is on our roof
 }
