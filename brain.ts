@@ -67,9 +67,12 @@ export const P = {
   fleeFix: 1, // retreat only when outnumbered up close or badly hurt; hold fire while retreating so regen can start
   lootFight: 1, // grab nearby cubes / weapons / landed supply drops while still fighting (legs and torso are independent)
   laserFix: 1, // don't crawl at half speed holding a laser charge: release when the target is gone or when ducking; execute low-HP targets early
-  blindMortar: 0, // lob mortar shells at enemies we still track (5 s memory) but cannot see
-  shortPrio: 0, // with lightning, target an enemy charging its laser inside lightning range first (the hit cancels its shot)
-  slopeFix: 0, // treat slopes over 1.15 m per metre as walls (engine: 50 deg) and widen clearance as cubes grow the mech
+  blindMortar: 1, // lob mortar shells at enemies we still track (5 s memory) but cannot see
+  shortPrio: 1, // with lightning, target an enemy charging its laser inside lightning range first (the hit cancels its shot)
+  slopeFix: 1, // treat slopes over 1.15 m per metre as walls (engine: 50 deg) and widen clearance as cubes grow the mech
+  lightAny: 1, // fire lightning whenever any visible enemy is inside its cone and range, not only the main target
+  beamPos: 1, // place unseen attackers at the beam's muzzle point instead of guessing 80 m along the bearing
+  coverStrafe: 0, // while strafing in a fight, drift toward a spot near cover so a laser duck is usually in reach
   roof: 0, // climb onto a roof inside the zone; hide in its interior, peek the edge to shoot down
   roofPassive: 0, // on the roof: stay hidden in the interior, never peek or shoot unless a mech is on our roof
 }
@@ -146,6 +149,9 @@ export class Brain {
   duckPt: V2 | null = null
   duckFor = -1
   duckTime = -99
+  anchor: V2 | null = null
+  anchorFor = -1
+  anchorTime = -99
   resetting = false
   hiding = false
   explore: V2 | null = null
@@ -352,7 +358,11 @@ export class Brain {
           if (e.bearing != null) this.lastHurtBearing = e.bearing
           if (e.by != null) {
             const tr = this.tracks.get(e.by)
-            if (tr) tr.hurtMe = this.t
+            const beam = P.beamPos ? obs.beams.find((bm) => bm.by === e.by && bm.path.length) : undefined
+            if (tr && beam && this.t - tr.seen > 0.2) tr.pos = [beam.path[0][0], beam.path[0][1], beam.path[0][2] - 7]
+            if (!tr && beam) {
+              this.tracks.set(e.by, { id: e.by, pos: [beam.path[0][0], beam.path[0][1], beam.path[0][2] - 7], vel: [0, 0, 0], hp: 1400, maxHp: 1400, weapons: [e.weapon], cubes: 0, seen: -99, hurtMe: this.t, charging: false, aim: [0, 0] })
+            } else if (tr) tr.hurtMe = this.t
             else
               this.tracks.set(e.by, { id: e.by, pos: [x + Math.cos(e.bearing ?? 0) * 80, y + Math.sin(e.bearing ?? 0) * 80, z], vel: [0, 0, 0], hp: 1400, maxHp: 1400, weapons: [e.weapon], cubes: 0, seen: -99, hurtMe: this.t, charging: false, aim: [0, 0] })
           }
@@ -750,6 +760,39 @@ export class Brain {
           mx = mx * 0.5 + zx * 0.7
           my = my * 0.5 + zy * 0.7
         }
+        if (P.coverStrafe && w) {
+          if ((!this.anchor || this.anchorFor !== target.id || this.t - this.anchorTime > 1.0) && !this.over(10)) {
+            this.anchorFor = target.id
+            this.anchorTime = this.t
+            this.anchor = null
+            let bd = 1e9
+            const tez = target.pos[2] + 8 * this.scale(target.cubes)
+            for (const R of [6, 10, 14, 18]) {
+              for (let k = 0; k < 16; k++) {
+                const a = (k / 16) * TAU
+                const px = x + Math.cos(a) * R, py = y + Math.sin(a) * R
+                if (!w.walkable(px, py, 2.9)) continue
+                const gz = w.groundAt(px, py)
+                if (w.los(target.pos[0], target.pos[1], tez, px, py, gz + 4.5)) continue
+                if (R < bd) {
+                  bd = R
+                  this.anchor = [px, py]
+                }
+              }
+              if (this.anchor) break
+            }
+          }
+          if (this.anchor) {
+            const ad = hyp(this.anchor[0] - x, this.anchor[1] - y)
+            if (ad > 8) {
+              mx += ((this.anchor[0] - x) / ad) * 0.6
+              my += ((this.anchor[1] - y) / ad) * 0.6
+              const L2 = hyp(mx, my) || 1
+              mx /= L2
+              my /= L2
+            }
+          }
+        }
         const sd = this.safeDir(mx, my, 6)
         if (sd[0] !== mx || sd[1] !== my) {
           if (this.rng() < 0.3) this.strafeSign *= -1
@@ -988,6 +1031,21 @@ export class Brain {
     aimPitch = clamp(aimPitch, cfg.mech.min_pitch ?? -0.7, cfg.mech.max_pitch ?? 1.3)
     act.aim = [wrap(aimYaw), aimPitch]
     this.lastAimCmd = [aimYaw, aimPitch]
+    if (P.lightAny && lightSlot >= 0 && !fire[lightSlot]) {
+      const lw = wps[lightSlot]!
+      const cone = ((lw.stats.cone_deg ?? 30) * Math.PI) / 180 / 2
+      if (lw.cooldown <= 0.05 && me.energy > (lw.stats.energy ?? 3) + (this.fleeing ? 25 : 12)) {
+        for (const e of enemies) {
+          if (this.t - e.seen > 0.05) continue
+          const d = hyp(e.pos[0] - x, e.pos[1] - y)
+          if (d > lw.stats.range * 0.95) continue
+          if (Math.abs(wrap(myAim[0] - Math.atan2(e.pos[1] - y, e.pos[0] - x))) > cone * 0.85) continue
+          if (!this.los(me.pos, muzzleZ, e.pos, this.centerZ(e))) continue
+          fire[lightSlot] = true
+          break
+        }
+      }
+    }
     act.fire = P.pacifist ? [false, false] : fire
     if (P.fleeFix && this.fleeing && !(target && tDist < 30)) act.fire = [false, false] // let the 5 s regen timer start
     if (P.laserFix && mode === "duck" && laserSlot >= 0) act.fire[laserSlot] = false // ducking at full speed
