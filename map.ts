@@ -30,7 +30,9 @@ export class World {
   by0 = 0
   by1 = 0
 
-  constructor(dir: string) {
+  rAdd = 0 // extra clearance (m) for a mech grown by cubes; set by the brain each tick
+
+  constructor(dir: string, slopeStep = 1.25) {
     const w = JSON.parse(readFileSync(`${dir}/v2/world.json`, "utf8"))
     const t = w.terrain
     this.nx = t.nx
@@ -89,7 +91,7 @@ export class World {
           continue
         }
         const s = surf[c]
-        if (Math.abs(surf[c + 1] - s) > 1.25 || Math.abs(surf[c - 1] - s) > 1.25 || Math.abs(surf[c + nx] - s) > 1.25 || Math.abs(surf[c - nx] - s) > 1.25) blocked[c] = 1
+        if (Math.abs(surf[c + 1] - s) > slopeStep || Math.abs(surf[c - 1] - s) > slopeStep || Math.abs(surf[c + nx] - s) > slopeStep || Math.abs(surf[c - nx] - s) > slopeStep) blocked[c] = 1
       }
     this.blocked = blocked
     this.clear = chamfer(blocked, nx, this.ny)
@@ -226,7 +228,7 @@ export class World {
 
   walkable(x: number, y: number, r = 2.8): boolean {
     const c = this.cell(x, y)
-    return c >= 0 && this.clear[c] >= r
+    return c >= 0 && this.clear[c] >= r + this.rAdd
   }
 
   /** Line of sight / shot path through buildings, terrain and bridges (trees ignored). */
@@ -251,6 +253,7 @@ export class World {
 
   /** Straight walk between two points stays on cells with clearance >= r. */
   walkLine(ax: number, ay: number, bx: number, by: number, r = 2.8): boolean {
+    r += this.rAdd
     const L = Math.hypot(bx - ax, by - ay)
     const steps = Math.max(1, Math.ceil(L / 0.7))
     for (let s = 0; s <= steps; s++) {
@@ -272,7 +275,7 @@ export class World {
         const a = (k / n) * Math.PI * 2
         const px = x + Math.cos(a) * rad, py = y + Math.sin(a) * rad
         const c = this.cell(px, py)
-        if (c >= 0 && this.clear[c] >= r && this.clear[c] > bc) {
+        if (c >= 0 && this.clear[c] >= r + this.rAdd && this.clear[c] > bc) {
           bc = this.clear[c]
           best = [px, py]
         }
@@ -301,6 +304,7 @@ export class World {
       this.closedStamp = new Uint32Array(n)
     }
     const gs = this.gs!, from = this.from!, stamp = this.stamp!, closed = this.closedStamp!
+    const rr = r + this.rAdd
     const s0 = this.nearestFree(sx, sy, r, 30)
     const g0 = this.nearestFree(gx, gy, r, 40)
     if (!s0 || !g0) return []
@@ -380,8 +384,8 @@ export class World {
         const nb = c + DI[k] + DJ[k] * nx
         if (nb < 0 || nb >= clear.length) continue
         const cl = clear[nb]
-        if (cl < r || closed[nb] === gen) continue
-        if (k >= 4 && (clear[c + DI[k]] < r || clear[c + DJ[k] * nx] < r)) continue
+        if (cl < rr || closed[nb] === gen) continue
+        if (k >= 4 && (clear[c + DI[k]] < rr || clear[c + DJ[k] * nx] < rr)) continue
         const step = (k < 4 ? 1 : 1.4142) * (1 + (cl < 7 ? (7 - cl) * 0.12 : 0))
         const ng = g + step
         if (stamp[nb] !== gen || ng < gs[nb]) {

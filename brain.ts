@@ -64,9 +64,12 @@ export const P = {
   giveUpT: 0, // diagnostic: from this match time (s) stop fighting and walk out of the zone (0 = off)
   giveUp2v1: 0, // diagnostic: give up for good the first time 2+ enemy mechs are within 70 m
   laserDuck: 1, // when a visible enemy charges its laser at us, step out of its line of sight if cover is close
-  fleeFix: 0, // retreat only when outnumbered up close or badly hurt; hold fire while retreating so regen can start
+  fleeFix: 1, // retreat only when outnumbered up close or badly hurt; hold fire while retreating so regen can start
   lootFight: 1, // grab nearby cubes / weapons / landed supply drops while still fighting (legs and torso are independent)
   laserFix: 1, // don't crawl at half speed holding a laser charge: release when the target is gone or when ducking; execute low-HP targets early
+  blindMortar: 1, // lob mortar shells at enemies we still track (5 s memory) but cannot see
+  shortPrio: 1, // with lightning, target an enemy charging its laser inside lightning range first (the hit cancels its shot)
+  slopeFix: 0, // treat slopes over 1.15 m per metre as walls (engine: 50 deg) and widen clearance as cubes grow the mech
   roof: 0, // climb onto a roof inside the zone; hide in its interior, peek the edge to shoot down
   roofPassive: 0, // on the roof: stay hidden in the interior, never peek or shoot unless a mech is on our roof
 }
@@ -166,7 +169,7 @@ export class Brain {
       return s / 4294967296
     }
     try {
-      this.world = new World(hello.map.dir)
+      this.world = new World(hello.map.dir, P.slopeFix ? 1.15 : 1.25)
     } catch (e) {
       log("map load failed", e)
     }
@@ -318,6 +321,7 @@ export class Brain {
   act(obs: Observation): Omit<Action, "tick"> {
     this.t0 = performance.now()
     const me = obs.self
+    if (this.world) this.world.rAdd = P.slopeFix ? 2.5 * (this.cfg.cubes.size_per_cube ?? 0.05) * obs.self.cubes : 0
     this.me = me
     this.t = obs.t
     const [x, y, z] = me.pos
@@ -431,6 +435,7 @@ export class Brain {
       if (!attacker && d > P.engageMax && e.id !== this.lastTargetId) continue
       const vis = this.los(me.pos, muzzleZ, e.pos, this.centerZ(e))
       let s = d + (e.hp / e.maxHp) * 60 + (vis ? 0 : 250) - (this.t - e.hurtMe < 4 ? 40 : 0) - (e.id === this.lastTargetId ? P.focus : 0)
+      if (P.shortPrio && vis && e.charging && lightSlot >= 0 && d < (wps[lightSlot]!.stats.range ?? 45) * 0.9) s -= 400
       if (s < tScore) {
         tScore = s
         target = e
@@ -599,6 +604,15 @@ export class Brain {
       }
     } else {
       // no target: look toward threats / sounds / movement
+      let blindAim: V2 | null = null
+      if (P.blindMortar && mortarSlot >= 0 && target && this.t - target.seen < 4.5 && tDist > 30 && tDist < 230) {
+        const mw = wps[mortarSlot]!
+        const sol = this.mortarSolve(mw.stats, { pos: target.pos, vel: target.vel, cz: this.centerZ(target) }, z + 9.5 * scaleMe)
+        if (sol) {
+          blindAim = sol
+          if (mw.cooldown <= 0.1 && Math.abs(wrap(myAim[0] - sol[0])) < 0.03 && Math.abs(myAim[1] - sol[1]) < 0.03) fire[mortarSlot] = true
+        }
+      }
       const laser = laserSlot >= 0 ? wps[laserSlot]! : null
       if (laser && (laser.charge ?? 0) > 0) {
         const ch = laser.charge ?? 0
@@ -608,7 +622,10 @@ export class Brain {
       } else if (laser && target && laser.cooldown <= 0.05 && tDist < laser.stats.range && this.t - Math.max(target.seen, target.hurtMe) < 3 && this.hiding) {
         fire[laserSlot] = true // pre-charge behind cover, release on peek
       }
-      if (target) {
+      if (blindAim) {
+        aimYaw = blindAim[0]
+        aimPitch = blindAim[1]
+      } else if (target) {
         aimYaw = Math.atan2(target.pos[1] - y, target.pos[0] - x)
         aimPitch = Math.atan2(this.centerZ(target) - muzzleZ, tDist)
       } else if (this.t - this.lastHurt < 4) {
