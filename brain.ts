@@ -67,9 +67,9 @@ export const P = {
   fleeFix: 1, // retreat only when outnumbered up close or badly hurt; hold fire while retreating so regen can start
   lootFight: 1, // grab nearby cubes / weapons / landed supply drops while still fighting (legs and torso are independent)
   laserFix: 1, // don't crawl at half speed holding a laser charge: release when the target is gone or when ducking; execute low-HP targets early
-  blindMortar: 1, // lob mortar shells at enemies we still track (5 s memory) but cannot see
-  shortPrio: 1, // with lightning, target an enemy charging its laser inside lightning range first (the hit cancels its shot)
-  slopeFix: 0, // treat slopes over 1.15 m per metre as walls (engine: 50 deg) and widen clearance as cubes grow the mech
+  blindMortar: 0, // lob mortar shells at enemies we still track (5 s memory) but cannot see
+  shortPrio: 0, // with lightning, target an enemy charging its laser inside lightning range first (the hit cancels its shot)
+  slopeFix: 1, // treat slopes over 1.15 m per metre as walls (engine: 50 deg) and widen clearance as cubes grow the mech
   roof: 0, // climb onto a roof inside the zone; hide in its interior, peek the edge to shoot down
   roofPassive: 0, // on the roof: stay hidden in the interior, never peek or shoot unless a mech is on our roof
 }
